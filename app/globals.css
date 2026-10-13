@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+/* Tokens = Figma variables (get_variable_defs on the MCL frames) */
+@theme {
+  --color-primary: #f8fcfd;
+  --color-bg5: #eaf7fb;
+  --color-nav: #424242;
+  --color-secondary: #152eaf;
+  --color-stroke: #47d7fb;
+  --color-stroke2: rgb(71 215 251 / 0.5);
+  --color-button: #304dc3;
+  --color-muted: #636a77;
+
+  --font-sans: var(--font-montserrat), sans-serif;
+  --font-inter: var(--font-inter), sans-serif;
+
+  /* Figma prototype: Smart Animate / Dissolve 300ms EASE_OUT ( = CSS ease-out ) */
+  --default-transition-duration: 300ms;
+  --default-transition-timing-function: cubic-bezier(0, 0, 0.58, 1);
+
+  --animate-dissolve: dissolve 300ms cubic-bezier(0, 0, 0.58, 1);
+  @keyframes dissolve {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+}
+
+body {
+  background: var(--color-bg5);
+  color: #000;
+}
+
+/* Figma leading-[normal]: Montserrat metrics (968 + 251) / 1000, text box rounded to whole px */
+@layer base {
+  *, ::before, ::after,
+  /* form controls: preflight's `font: inherit` would otherwise inherit the parent's line-height */
+  button, input, select, textarea {
+    line-height: round(1.219em, 1px);
+  }
+}
+
+/* Mono-colour Figma icons rendered as masks so the colour comes from context */
+.icon {
+  display: inline-block;
+  flex-shrink: 0;
+  background-color: currentColor;
+  mask: var(--icon) center / contain no-repeat;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
