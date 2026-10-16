@@ -1,16 +1,27 @@
 "use client";
 
 import { useState } from "react";
-import { Badge, IconButton, Pagination } from "@/components/ui";
-import { applyFields, EditLeadModal } from "@/components/leads/LeadModals";
+import { useRemove } from "@/components/feedback";
+import { SkeletonRows } from "@/components/skeletons";
+import { Badge, EmptyState, IconButton, LoadFailed, Pagination } from "@/components/ui";
+import { EditLeadModal, leadRemoval, type Lead } from "@/components/leads/LeadModals";
 import { LeadTools, useLeads } from "@/components/leads/LeadsView";
+import { cap, day, inr, paging, useApi, type List } from "@/lib/api";
 
 // Leads- Table (Figma 1:6132): column widths 400/100/100/90/120/120/100/80/120 = 1230
 const cell = "shrink-0 text-[16px] font-medium tracking-[-0.64px] text-black";
 
 export default function LeadsTablePage() {
-  const { rows, setRows, show } = useLeads();
-  const [editing, setEditing] = useState<number | null>(null);
+  const { query, version, refresh } = useLeads();
+  // A new search or filter starts again at page 1.
+  const key = JSON.stringify(query);
+  const [paged, setPaged] = useState({ key, page: 1 });
+  const page = paged.key === key ? paged.page : 1;
+  const setPage = (p: number) => setPaged({ key, page: p });
+  const [editing, setEditing] = useState<Lead | null>(null);
+  const leads = useApi<List<Lead>>("/leads", { ...query, page }, version);
+
+  const { remove, removing } = useRemove(refresh);
 
   return (
     <section className="flex min-w-0 flex-col gap-[10px] rounded-[22px] border border-stroke2 bg-primary px-5">
@@ -22,7 +33,7 @@ export default function LeadsTablePage() {
       <div className="overflow-x-auto">
         <div className="flex min-w-[1230px] flex-col gap-[10px]">
           <div className="flex items-center border-b border-stroke2 py-5 text-[16px] font-medium tracking-[-0.64px] text-nav *:shrink-0 *:opacity-80">
-            <p className="min-w-[400px] flex-1">Tittle</p>
+            <p className="min-w-[400px] flex-1">Title</p>
             <p className="w-[100px]">Source</p>
             <p className="w-[100px]">Stage</p>
             <p className="w-[90px]">Priority</p>
@@ -33,38 +44,43 @@ export default function LeadsTablePage() {
             <p className="w-[120px] text-center">Actions</p>
           </div>
 
-          {rows.filter(show).map((r) => (
+          {!leads.data && !leads.error && <SkeletonRows columns={["flex", 100, 100, 90, 120, 120, 100, 80, 120]} />}
+          {!leads.data && leads.error && <LoadFailed what="leads" onRetry={leads.reload} />}
+          {leads.data?.items.length === 0 && <EmptyState>{query.q || query.sourceId || query.priority ? "No leads match your search or filters." : "No leads yet. Use Add Lead to create the first one."}</EmptyState>}
+          {leads.data?.items.map((r) => (
             <div key={r.id} className="flex items-center border-b border-stroke2 pt-[10px] pb-4">
               <p className={`${cell} min-w-[400px] flex-1`}>{r.title}</p>
-              <p className={`${cell} w-[100px]`}>{r.source}</p>
+              <p className={`${cell} w-[100px]`}>{r.source?.name ?? "------"}</p>
               <div className="w-[100px] shrink-0">
-                <Badge label={r.stage} width={88} />
+                <Badge label={r.status.name} width={88} />
               </div>
               <div className="w-[90px] shrink-0">
-                <Badge label={r.priority} width={76} />
+                <Badge label={cap(r.priority)} width={76} />
               </div>
-              <p className={`${cell} w-[120px]`}>{r.value}</p>
+              <p className={`${cell} w-[120px]`}>{inr(r.expectedValue)}</p>
               <div className="w-[120px] shrink-0">
-                <Badge label={r.payment} width={96} />
+                <Badge label={cap(r.paymentStatus)} width={96} />
               </div>
-              <p className={`${cell} w-[100px]`}>{r.owner}</p>
-              <p className="w-20 shrink-0 text-[16px] font-medium text-black">{r.created}</p>
+              <p className={`${cell} w-[100px]`}>{r.owner?.name ?? "------"}</p>
+              <p className="w-20 shrink-0 text-[16px] font-medium text-black">{day(r.createdAt)}</p>
               <div className="flex w-[120px] shrink-0 items-center justify-center gap-1">
-                {/* Edit: inferred → Edit Lead overlay (1:7595); Delete: removes the row locally */}
-                <IconButton icon="edit" label="Edit lead" onClick={() => setEditing(r.id)} className="h-[38px]!" />
-                <IconButton icon="delete" label="Delete lead" onClick={() => setRows((rs) => rs.filter((x) => x.id !== r.id))} />
+                <IconButton icon="edit" label="Edit lead" onClick={() => setEditing(r)} className="h-[38px]!" />
+                <IconButton icon="delete" label="Delete lead" onClick={() => remove(r.id, leadRemoval(r))} disabled={removing === r.id} />
               </div>
             </div>
           ))}
         </div>
       </div>
 
-      <Pagination label="Showing 1 to 6 of 2,00 Leads" />
+      <Pagination {...paging(leads.data, "Leads", setPage)} />
 
       <EditLeadModal
-        open={editing !== null}
+        lead={editing}
         onClose={() => setEditing(null)}
-        onSave={(f) => setRows((rs) => rs.map((r) => (r.id === editing ? applyFields(r, f) : r)))}
+        onSaved={() => {
+          setEditing(null);
+          refresh();
+        }}
       />
     </section>
   );

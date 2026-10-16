@@ -3,94 +3,67 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { createContext, use, useCallback, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
-import { Icon } from "@/components/Icon";
-import { PageHeader, Popover, PrimaryButton, SearchBox, ToolButton } from "@/components/ui";
-import { CreateLeadModal } from "@/components/leads/LeadModals";
-import { LEAD_SOURCE_OPTIONS, LEADS, PIPELINE, PRIORITY_OPTIONS, type Lead } from "@/lib/mock/leads";
+import { useToast } from "@/components/feedback";
+import { FilterMenu, PageHeader, Popover, PrimaryButton, SearchBox, ToolButton } from "@/components/ui";
+import { CreateLeadModal, PRIORITIES, useLookups } from "@/components/leads/LeadModals";
+import { SubtitleSkeleton } from "@/components/skeletons";
+import { cap, useApi, useDebounced, type List } from "@/lib/api";
 
-type Filter = { source: string; priority: string };
+type Filter = { sourceId: string; priority: string };
 type Ctx = {
-  rows: Lead[]; // Table view rows
-  setRows: Dispatch<SetStateAction<Lead[]>>;
-  cards: Lead[]; // Pipeline cards
-  setCards: Dispatch<SetStateAction<Lead[]>>;
-  search: string;
+  search: string; // what the box shows
+  q: string; // what the API is asked: the search once typing pauses
   setSearch: (v: string) => void;
   filter: Filter;
   setFilter: Dispatch<SetStateAction<Filter>>;
+  version: number; // bumped after a create so the table / pipeline refetch
+  refresh: () => void;
 };
 
 const LeadsCtx = createContext<Ctx | null>(null);
 
-// Shared by Table and Pipeline views; `show` applies Search + Filter client-side.
+// Shared by Table and Pipeline views; Search + Filter are sent to the API.
 export function useLeads() {
   const ctx = use(LeadsCtx);
   if (!ctx) throw new Error("useLeads must be used inside <LeadsView>");
-  const q = ctx.search.trim().toLowerCase();
-  const { source, priority } = ctx.filter;
-  const show = (l: Lead) =>
-    (!q || [l.title, l.source, l.stage, l.priority, l.owner, l.value, l.created].join(" ").toLowerCase().includes(q)) &&
-    (!source || l.source === source) &&
-    (!priority || l.priority === priority);
-  return { ...ctx, show };
+  return { ...ctx, query: { q: ctx.q, sourceId: ctx.filter.sourceId, priority: ctx.filter.priority } };
 }
 
-/* ---------- Filter dropdown (Figma 1:7751 collapsed / 1:7770 Sources expanded) ---------- */
-// Figma rows: 40 + 0.5px divider (Chrome draws the 0.5px border as 1px, so the height is fixed instead of padded)
-const row = "flex h-[40.5px] w-full cursor-pointer items-center px-4 text-left text-[16px] tracking-[-0.32px] text-nav last:h-10";
-
-function FilterMenu({ onPicked }: { onPicked: () => void }) {
+/* ---------- Filter dropdown (Figma 1:7751 collapsed / 1:7770 Sources expanded): shared FilterMenu ---------- */
+function LeadFilterMenu({ onPicked }: { onPicked: () => void }) {
   const { filter, setFilter } = useLeads();
-  const [open, setOpen] = useState<keyof Filter | null>(null);
-  const groups: [keyof Filter, string, readonly string[]][] = [
-    ["source", "Sources", LEAD_SOURCE_OPTIONS],
-    ["priority", "Priority", PRIORITY_OPTIONS],
-  ];
+  const { sources } = useLookups();
   return (
-    <div className="flex w-[142px] flex-col divide-y-[0.5px] divide-stroke2 overflow-hidden rounded-[9px] border border-stroke2 bg-primary">
-      {groups.map(([key, label, options]) => [
-        <button key={key} type="button" aria-expanded={open === key} onClick={() => setOpen(open === key ? null : key)} className={row}>
-          <span className="flex w-[94px] items-center justify-between">
-            {label}
-            <Icon name="arrow-right" size={18} className="rotate-90" />
-          </span>
-        </button>,
-        ...(open === key
-          ? options.map((o) => (
-              <button
-                key={o}
-                type="button"
-                aria-pressed={filter[key] === o}
-                onClick={() => {
-                  setFilter((f) => ({ ...f, [key]: f[key] === o ? "" : o })); // click again to clear
-                  onPicked();
-                }}
-                className={`${row} ${filter[key] === o ? "text-secondary" : ""}`}
-              >
-                {o}
-              </button>
-            ))
-          : []),
-      ])}
-    </div>
+    <FilterMenu
+      groups={[
+        { key: "sourceId", label: "Sources", options: sources.map((s) => ({ value: s.id, label: s.name })) },
+        { key: "priority", label: "Priority", options: PRIORITIES.map((p) => ({ value: p, label: cap(p) })) },
+      ]}
+      value={filter}
+      onPick={(key, value) => {
+        setFilter((f) => ({ ...f, [key]: value }));
+        onPicked();
+      }}
+    />
   );
 }
 
 // Search / Report / Filter group: inside the table card (Table view), in the toggle row (Pipeline view).
 export function LeadTools({ className = "" }: { className?: string }) {
   const { search, setSearch } = useLeads();
+  const toast = useToast();
   const btn = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
   return (
     <div className={`flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto ${className}`}>
       <SearchBox value={search} onChange={setSearch} />
-      {/* Report: no prototype action in Figma */}
-      <ToolButton label="Report" icon="download" />
+      {/* Report: export scope not decided yet (report O1 / Q23) */}
+      <ToolButton label="Report" icon="download" onClick={() => toast.info("Lead reports aren't available yet", "Export will be added once its contents are agreed.")} />
       <ToolButton label="Filter" icon="filter" btnRef={btn} onClick={() => setOpen(true)} />
       {/* Figma: MANUAL overlay at (-38.2, 54) from the Filter button, 25% backdrop */}
       <Popover anchor={btn} open={open} onClose={close} dx={-38.2} dy={54}>
-        <FilterMenu onPicked={close} />
+        <LeadFilterMenu onPicked={close} />
       </Popover>
     </div>
   );
@@ -120,7 +93,7 @@ function ViewToggle({ pipeline }: { pipeline: boolean }) {
             href={v.href}
             aria-current={active ? "page" : undefined}
             style={{ width: v.w }}
-            className={`relative flex h-10 items-center justify-center text-[16px] font-medium whitespace-nowrap transition-colors ${active ? "text-primary" : "text-black"}`}
+            className={`relative flex h-10 items-center justify-center text-[16px] font-medium whitespace-nowrap transition-colors ${active ? "text-white" : "text-black"}`}
           >
             {v.label}
           </Link>
@@ -134,19 +107,22 @@ function ViewToggle({ pipeline }: { pipeline: boolean }) {
 export function LeadsView({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const pipeline = pathname.endsWith("/pipeline");
-  const [rows, setRows] = useState(LEADS);
-  const [cards, setCards] = useState(PIPELINE);
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<Filter>({ source: "", priority: "" });
+  const q = useDebounced(search);
+  const [filter, setFilter] = useState<Filter>({ sourceId: "", priority: "" });
+  const [version, setVersion] = useState(0);
   const [creating, setCreating] = useState(false);
   const closeCreate = useCallback(() => setCreating(false), []);
+  const refresh = useCallback(() => setVersion((v) => v + 1), []);
+  const all = useApi<List<unknown>>("/leads", { pageSize: 1 }, version);
+  const total = all.data?.total;
 
   return (
-    <LeadsCtx value={{ rows, setRows, cards, setCards, search, setSearch, filter, setFilter }}>
+    <LeadsCtx value={{ search, q, setSearch, filter, setFilter, version, refresh }}>
       <div className="flex flex-col gap-[18px] p-4 sm:p-6">
         <PageHeader
           title="Leads Management"
-          subtitle="12 Total Leads"
+          subtitle={total === undefined ? !all.error && <SubtitleSkeleton /> : `${total} Total Leads`}
           action={<PrimaryButton onClick={() => setCreating(true)}>Add Lead</PrimaryButton>}
         />
         <div className="flex flex-wrap items-center justify-between gap-3">
@@ -165,9 +141,8 @@ export function LeadsView({ children }: { children: ReactNode }) {
       <CreateLeadModal
         open={creating}
         onClose={closeCreate}
-        onCreate={(lead) => {
-          setRows((r) => [lead, ...r]);
-          setCards((c) => [lead, ...c]);
+        onCreate={() => {
+          refresh();
           closeCreate();
         }}
       />

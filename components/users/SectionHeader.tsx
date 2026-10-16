@@ -7,7 +7,7 @@ import { PageHeader } from "@/components/ui";
 // (Leads uses Montserrat, hence the shared PageHeader default). Root layout only loads Inter 700.
 export const inter = Inter({ subsets: ["latin"] });
 
-export function SectionHeader({ title, subtitle, action }: { title: string; subtitle: string; action?: ReactNode }) {
+export function SectionHeader({ title, subtitle, action }: { title: string; subtitle: ReactNode; action?: ReactNode }) {
   return (
     <div className={`${inter.className} [&_h1]:leading-[round(1.21em,1px)] [&_p]:leading-[round(1.21em,1px)]`}>
       <PageHeader title={title} subtitle={subtitle} action={action && <div className="font-sans">{action}</div>} />

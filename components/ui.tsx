@@ -4,8 +4,57 @@ import { useEffect, useRef, useState, type ReactNode, type RefObject } from "rea
 import { createPortal } from "react-dom";
 import { Icon, type IconName } from "./Icon";
 
+// Every <button>/<input>/<textarea>/<select> in the app carries suppressHydrationWarning: browser extensions
+// (password managers, form fillers) stamp attributes such as fdprocessedid onto form controls before React
+// hydrates. It silences attribute mismatches on that one element only — never on its children.
+
+/* ---------- Status icon, spinner, inline field error (shared by forms and components/feedback.tsx) ---------- */
+export type Tone = "success" | "error" | "warning" | "info";
+// 24px grid, 1.5px strokes like the Figma icon set
+const ICON: Record<Tone, ReactNode> = {
+  success: <path d="M8 12.5l2.5 2.5L16 9.5" />,
+  error: <path d="M9.5 9.5l5 5m0-5l-5 5" />,
+  warning: <path d="M12 8v5m0 3h.01" />,
+  info: <path d="M12 11v5m0-8h.01" />,
+};
+const TONE_CLASS: Record<Tone, string> = {
+  success: "text-success",
+  error: "text-danger",
+  warning: "text-warn",
+  info: "text-link",
+};
+export function ToneIcon({ tone, size = 22 }: { tone: Tone; size?: number }) {
+  return (
+    <svg aria-hidden width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className={`shrink-0 ${TONE_CLASS[tone]}`}>
+      <circle cx="12" cy="12" r="9" />
+      {ICON[tone]}
+    </svg>
+  );
+}
+
+/** Small spinner for pending buttons (static under reduced motion, via the global rule in globals.css). */
+export function Spinner({ className = "" }: { className?: string }) {
+  return (
+    <svg aria-hidden viewBox="0 0 24 24" fill="none" className={`size-[18px] shrink-0 animate-spin ${className}`}>
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeOpacity="0.25" strokeWidth="3" />
+      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Inline message under a form field; pair the control with aria-invalid + aria-describedby={id}. */
+export function FieldError({ id, message }: { id?: string; message?: string }) {
+  if (!message) return null;
+  return (
+    <span id={id} role="alert" className="flex animate-rise items-center gap-[6px] text-[14px] font-medium text-danger">
+      <ToneIcon tone="error" size={16} />
+      {message}
+    </span>
+  );
+}
+
 /* ---------- Page header (title / subtitle / action, bottom divider) ---------- */
-export function PageHeader({ title, subtitle, action }: { title: string; subtitle: string; action?: ReactNode }) {
+export function PageHeader({ title, subtitle, action }: { title: string; subtitle: ReactNode; action?: ReactNode }) {
   return (
     <div className="flex w-full flex-wrap items-center justify-center gap-2 border-b border-stroke2 pb-[23px]">
       <div className="flex min-w-px flex-1 flex-col gap-1 text-black">
@@ -21,7 +70,7 @@ export function PageHeader({ title, subtitle, action }: { title: string; subtitl
 // Figma "Tab select/Button" (blue, plus icon)
 export function PrimaryButton({ children, icon = "add", onClick }: { children: ReactNode; icon?: IconName | null; onClick?: () => void }) {
   return (
-    <button type="button" onClick={onClick} className="flex shrink-0 cursor-pointer items-center gap-2 rounded-[16px] bg-button px-[18px] py-[14px] text-[18px] leading-6 font-medium whitespace-nowrap text-white">
+    <button suppressHydrationWarning type="button" onClick={onClick} className="flex shrink-0 cursor-pointer items-center gap-2 rounded-[16px] bg-button px-[18px] py-[14px] text-[18px] leading-6 font-medium whitespace-nowrap text-white">
       {icon && <Icon name={icon} className="text-white" />}
       {children}
     </button>
@@ -31,7 +80,7 @@ export function PrimaryButton({ children, icon = "add", onClick }: { children: R
 // Figma "Button" (Report / Filter): label + trailing 18px icon
 export function ToolButton({ label, icon, onClick, btnRef }: { label: string; icon: IconName; onClick?: () => void; btnRef?: RefObject<HTMLButtonElement | null> }) {
   return (
-    <button ref={btnRef} type="button" onClick={onClick} className="flex shrink-0 cursor-pointer items-center gap-2 rounded-[18px] border border-stroke2 bg-bg5 px-[17px] py-[13px] text-[16px] leading-5 font-medium whitespace-nowrap text-nav">
+    <button suppressHydrationWarning ref={btnRef} type="button" onClick={onClick} className="flex shrink-0 cursor-pointer items-center gap-2 rounded-[18px] border border-stroke2 bg-bg5 px-[17px] py-[13px] text-[16px] leading-5 font-medium whitespace-nowrap text-nav">
       {label}
       <Icon name={icon} size={18} />
     </button>
@@ -42,7 +91,7 @@ export function SearchBox({ value, onChange, className = "sm:w-[314px]" }: { val
   return (
     <label className={`flex w-full items-center gap-2 rounded-[18px] border border-stroke2 bg-bg5 px-[17px] py-[13px] ${className}`}>
       <Icon name="search" size={18} className="text-nav" />
-      <input
+      <input suppressHydrationWarning
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Search..."
@@ -53,10 +102,10 @@ export function SearchBox({ value, onChange, className = "sm:w-[314px]" }: { val
 }
 
 // Square icon button used in table "Actions"
-export function IconButton({ icon, label, onClick, className = "" }: { icon: IconName; label: string; onClick?: () => void; className?: string }) {
+export function IconButton({ icon, label, onClick, className = "", disabled = false }: { icon: IconName; label: string; onClick?: () => void; className?: string; disabled?: boolean }) {
   return (
-    <button type="button" aria-label={label} onClick={onClick} className={`flex h-9 w-[46px] shrink-0 cursor-pointer items-center justify-center rounded-[12px] border border-stroke2 bg-bg5 ${className}`}>
-      <Icon name={icon} size={18} className="text-nav" />
+    <button suppressHydrationWarning type="button" aria-label={label} onClick={onClick} disabled={disabled} aria-busy={disabled || undefined} className={`flex h-9 w-[46px] shrink-0 cursor-pointer items-center justify-center rounded-[12px] border border-stroke2 bg-bg5 transition-[background-color,opacity] hover:bg-[rgb(71_215_251/0.2)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:cursor-wait disabled:opacity-50 ${className}`}>
+      {disabled ? <Spinner className="text-nav" /> : <Icon name={icon} size={18} className="text-nav" />}
     </button>
   );
 }
@@ -91,24 +140,50 @@ export function Badge({ label, width, className = "" }: { label: string; width?:
   );
 }
 
+/* ---------- Empty and failed states for tables and lists (loading: components/skeletons.tsx) ---------- */
+export function EmptyState({ children }: { children: ReactNode }) {
+  return (
+    <p role="status" className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 border-b border-stroke2 py-10 text-center text-[16px] text-muted">
+      {children}
+    </p>
+  );
+}
+
+/** A first load that failed: says so, with a retry (a skeleton never stands in for an error). */
+export function LoadFailed({ what, onRetry }: { what: string; onRetry: () => void }) {
+  return (
+    <EmptyState>
+      Couldn&apos;t load the {what}.
+      <button suppressHydrationWarning type="button" onClick={onRetry} className="cursor-pointer font-semibold text-link hover:underline">
+        Try again
+      </button>
+    </EmptyState>
+  );
+}
+
 /* ---------- Pagination ---------- */
-export function Pagination({ label, pages = 4 }: { label: string; pages?: number }) {
-  const [page, setPage] = useState(1);
+// Controlled when `onPage` is given (server paging); shows up to 5 page numbers around the current one.
+export function Pagination({ label, pages = 4, page: current, onPage }: { label: string; pages?: number; page?: number; onPage?: (page: number) => void }) {
+  const [local, setLocal] = useState(1);
+  const page = current ?? local;
+  const go = (p: number) => (onPage ?? setLocal)(Math.min(Math.max(1, p), pages));
+  const first = Math.max(1, Math.min(page - 2, pages - 4));
   return (
     <div className="flex w-full flex-wrap items-center justify-between gap-3 py-5">
       <p className="text-[12px] text-muted">{label}</p>
       <div className="flex items-center gap-[6px]">
-        {Array.from({ length: pages }, (_, i) => i + 1).map((n) => (
-          <button
+        {Array.from({ length: Math.min(5, pages) }, (_, i) => first + i).map((n) => (
+          <button suppressHydrationWarning
             key={n}
             type="button"
-            onClick={() => setPage(n)}
+            aria-current={n === page ? "page" : undefined}
+            onClick={() => go(n)}
             className={`flex h-8 cursor-pointer items-center justify-center rounded-[4px] px-3 text-[14px] ${n === page ? "bg-stroke text-white" : "text-muted"}`}
           >
             {n}
           </button>
         ))}
-        <button type="button" aria-label="Next page" onClick={() => setPage((p) => Math.min(pages, p + 1))} className="cursor-pointer text-nav">
+        <button suppressHydrationWarning type="button" aria-label="Next page" onClick={() => go(page + 1)} disabled={page >= pages} className="cursor-pointer text-nav disabled:cursor-default disabled:opacity-30">
           <Icon name="arrow-right" />
         </button>
       </div>
@@ -117,13 +192,46 @@ export function Pagination({ label, pages = 4 }: { label: string; pages?: number
 }
 
 /* ---------- Overlays ---------- */
+// Open overlays, innermost last. Escape closes only the top one: a dropdown inside a form closes and the form stays
+// open with what was typed (every overlay used to close at once).
+const layers: object[] = [];
 function useEscape(open: boolean, onClose: () => void) {
+  const close = useRef(onClose);
+  useEffect(() => {
+    close.current = onClose;
+  });
   useEffect(() => {
     if (!open) return;
-    const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const layer = {};
+    layers.push(layer);
+    const h = (e: KeyboardEvent) => e.key === "Escape" && layers.at(-1) === layer && close.current();
     window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, [open, onClose]);
+    return () => {
+      window.removeEventListener("keydown", h);
+      layers.splice(layers.indexOf(layer), 1);
+    };
+  }, [open]);
+}
+
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/** Keyboard focus moves into `box` when `open` turns true and goes back to whatever had it when it closes. */
+function useFocusReturn(open: boolean, box: RefObject<HTMLElement | null>, first: (el: HTMLElement) => HTMLElement | null) {
+  const pick = useRef(first);
+  useEffect(() => {
+    pick.current = first;
+  });
+  useEffect(() => {
+    if (!open) return;
+    const opener = document.activeElement as HTMLElement | null;
+    const el = box.current;
+    if (el && !el.contains(document.activeElement)) pick.current(el)?.focus({ preventScroll: true }); // unless something inside took it (autoFocus)
+    return () => {
+      // Only when focus was left inside (or dropped with the closed overlay): a deliberate move elsewhere stays.
+      const lost = !document.activeElement || document.activeElement === document.body || el?.contains(document.activeElement);
+      if (lost && opener?.isConnected) opener.focus({ preventScroll: true });
+    };
+  }, [open, box]);
 }
 
 // Figma overlay: CENTER (or TOP_CENTER), black 50% backdrop, close on click outside, instant.
@@ -136,21 +244,49 @@ export function Modal({ open, onClose, title, children, className = "w-[700px]",
   top?: boolean;
 }) {
   useEscape(open, onClose);
+  const box = useRef<HTMLDivElement>(null);
+  // The dialog itself takes focus on open (screen readers announce its title; the next Tab reaches the first control).
+  useFocusReturn(open, box, (el) => el);
   if (!open) return null;
+  // Tab and Shift+Tab wrap inside the dialog. Focus in a dropdown (rendered outside it) is left to that dropdown.
+  const keepFocusInside = (e: React.KeyboardEvent) => {
+    const el = box.current;
+    if (e.key !== "Tab" || !el?.contains(document.activeElement)) return;
+    const items = [...el.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((x) => x.getClientRects().length > 0);
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && (document.activeElement === first || document.activeElement === el)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
   return (
-    <div className={`fixed inset-0 z-50 flex justify-center bg-black/50 p-4 ${top ? "items-start" : "items-center"}`} onMouseDown={onClose}>
+    <div className={`fixed inset-0 z-50 flex justify-center bg-scrim/50 p-4 ${top ? "items-start" : "items-center"}`} onMouseDown={onClose}>
       <div
+        ref={box}
         role="dialog"
         aria-modal
         aria-label={title}
+        tabIndex={-1}
+        onKeyDown={keepFocusInside}
         onMouseDown={(e) => e.stopPropagation()}
-        className={`relative flex max-h-[calc(100dvh-32px)] max-w-full flex-col gap-6 overflow-y-auto rounded-[24px] border border-stroke2 bg-primary p-5 sm:p-8 ${className}`}
+        className={`relative flex max-h-[calc(100dvh-32px)] max-w-full flex-col gap-6 overflow-y-auto rounded-[24px] border border-stroke2 bg-primary p-5 outline-none sm:p-8 ${className}`}
       >
         <div className="flex w-full items-start border-b border-stroke2 pr-8 pb-8">
           <h2 className="text-[22px] font-medium text-black sm:text-[28px]">{title}</h2>
         </div>
         {/* Figma close control: 24px, centred 47px from the right / 45px from the top of every overlay */}
-        <button type="button" aria-label="Close" onClick={onClose} className="absolute top-[33px] right-[35px] cursor-pointer text-black">
+        <button
+          suppressHydrationWarning
+          type="button"
+          aria-label={`Close ${title.replace(/[?.!:]+$/, "").toLowerCase()} dialog`} // "Delete lead?" → "Close delete lead dialog"
+          onClick={onClose}
+          className="absolute top-[33px] right-[35px] cursor-pointer rounded-[6px] text-black transition-opacity hover:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+        >
           <Icon name="close" />
         </button>
         {children}
@@ -159,14 +295,28 @@ export function Modal({ open, onClose, title, children, className = "w-[700px]",
   );
 }
 
-export function ModalActions({ onCancel, onDone, doneLabel = "Done" }: { onCancel: () => void; onDone: () => void; doneLabel?: string }) {
+export function ModalActions({ onCancel, onDone, doneLabel = "Done", pending = false, pendingLabel = "Saving…" }: {
+  onCancel: () => void;
+  onDone: () => void;
+  doneLabel?: string;
+  pending?: boolean; // request in flight: Done shows a spinner and cannot be pressed again
+  pendingLabel?: string;
+}) {
   return (
     <div className="flex items-center justify-end gap-[6px]">
-      <button type="button" onClick={onCancel} className="h-10 cursor-pointer rounded-[12px] border border-button bg-white px-4 text-[16px] font-medium text-black">
+      <button suppressHydrationWarning type="button" onClick={onCancel} className="h-10 cursor-pointer rounded-[12px] border border-button bg-white px-4 dark:bg-transparent text-[16px] font-medium text-black transition-colors hover:bg-bg5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus">
         Cancel
       </button>
-      <button type="button" onClick={onDone} className="h-10 cursor-pointer rounded-[12px] bg-button px-4 text-[16px] font-medium text-primary">
-        {doneLabel}
+      <button
+        suppressHydrationWarning
+        type="button"
+        onClick={onDone}
+        disabled={pending}
+        aria-busy={pending}
+        className="flex h-10 cursor-pointer items-center gap-2 rounded-[12px] bg-button px-4 text-[16px] font-medium text-white transition-[background-color,transform] hover:bg-secondary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus active:scale-[0.98] disabled:cursor-wait disabled:opacity-80"
+      >
+        {pending && <Spinner />}
+        {pending ? pendingLabel : doneLabel}
       </button>
     </div>
   );
@@ -188,19 +338,48 @@ export function Popover({ anchor, open, onClose, dx = 0, dy = 0, backdrop = true
     window.addEventListener("resize", onClose);
     return () => window.removeEventListener("resize", onClose);
   }, [open, onClose]);
+  // Keyboard users land on the first option (the panel is rendered at the end of the page, out of Tab reach) and
+  // return to the trigger when it closes.
+  const panel = useRef<HTMLDivElement | null>(null);
+  useFocusReturn(open, panel, (el) => el.querySelector<HTMLElement>(FOCUSABLE));
   if (!open) return null;
   // Position is read from the trigger when the panel mounts (no extra render pass).
   const place = (el: HTMLDivElement | null) => {
+    panel.current = el;
     const r = el && anchor.current?.getBoundingClientRect();
     if (!el || !r) return;
     el.style.left = `${Math.max(8, Math.min(r.left + dx, window.innerWidth - el.offsetWidth - 8))}px`;
-    el.style.top = `${r.top + dy}px`;
+    const top = r.top + dy;
+    el.style.top = `${top}px`;
+    // A long list (e.g. many roles) scrolls inside the panel instead of running off the bottom of the screen.
+    // ponytail: never flips above the trigger; add that if a dropdown ever sits in the bottom ~160px.
+    const room = window.innerHeight - top - 8;
+    if (el.offsetHeight > room) {
+      el.style.maxHeight = `${Math.max(room, 160)}px`;
+      el.style.overflowY = "auto";
+    }
   };
   // Portal to <body>: keeps the overlay out of any ancestor <label> (whose activation would
   // re-click the trigger) and out of scroll/stacking contexts such as modal bodies.
   return createPortal(
-    <div className={`fixed inset-0 z-50 ${backdrop ? "bg-black/25" : ""}`} onMouseDown={onClose} onWheel={onClose}>
-      <div ref={place} className="fixed" onMouseDown={(e) => e.stopPropagation()}>
+    <div className={`fixed inset-0 z-50 ${backdrop ? "bg-scrim/25" : ""}`} onMouseDown={onClose} onWheel={onClose}>
+      <div
+        ref={place}
+        className="fixed overscroll-contain"
+        onMouseDown={(e) => e.stopPropagation()}
+        // Tab closes the panel and puts focus back on its trigger (the panel sits at the end of the page, so the
+        // browser's own Tab would jump elsewhere); the next Tab carries on from the trigger.
+        onKeyDown={(e) => {
+          if (e.key !== "Tab" || e.defaultPrevented) return;
+          e.preventDefault();
+          onClose();
+        }}
+        // Scrolling a list inside the panel scrolls the list; any other wheel still closes the panel (it would drift from its trigger).
+        onWheel={(e) => {
+          for (let el = e.target as HTMLElement | null; el && el !== e.currentTarget.parentElement; el = el.parentElement)
+            if (el.scrollHeight > el.clientHeight) return e.stopPropagation();
+        }}
+      >
         {children}
       </div>
     </div>,
@@ -208,29 +387,93 @@ export function Popover({ anchor, open, onClose, dx = 0, dy = 0, backdrop = true
   );
 }
 
-/* ---------- Form fields (modal forms) ---------- */
-export function Field({ label, children, className = "" }: { label: string; children: ReactNode; className?: string }) {
+/* ---------- Filter dropdown (Figma 1:7751 collapsed / 1:7770 expanded): Leads, Customers, Follow-ups ---------- */
+// A group opens its options; picking an option applies it, picking it again clears it.
+export type FilterGroup = { key: string; label: string; options: { value: string; label: string }[] };
+// Figma rows: 40 + 0.5px divider (Chrome draws the 0.5px border as 1px, so the height is fixed instead of padded)
+const filterRow =
+  "flex h-[40.5px] w-full cursor-pointer items-center px-4 text-left text-[16px] tracking-[-0.32px] text-nav last:h-10 focus-visible:bg-bg5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus";
+
+export function FilterMenu({ groups, value, onPick }: { groups: FilterGroup[]; value: Record<string, string>; onPick: (key: string, value: string) => void }) {
+  const [open, setOpen] = useState<string | null>(groups.length === 1 ? groups[0].key : null);
   return (
-    <label className={`flex w-full min-w-0 flex-col gap-[6px] ${className}`}>
-      <span className="text-[18px] font-medium text-black sm:text-[20px]">{label}</span>
-      {children}
-    </label>
+    <div className="flex w-[142px] flex-col divide-y-[0.5px] divide-stroke2 overflow-hidden rounded-[9px] border border-stroke2 bg-primary">
+      {groups.map(({ key, label, options }) => [
+        <button suppressHydrationWarning key={key} type="button" aria-expanded={open === key} onClick={() => setOpen(open === key ? null : key)} className={filterRow}>
+          <span className="flex w-[94px] items-center justify-between">
+            {label}
+            <Icon name="arrow-right" size={18} className="rotate-90" />
+          </span>
+        </button>,
+        ...(open === key
+          ? options.map((o) => (
+              <button
+                suppressHydrationWarning
+                key={`${key}:${o.value}`}
+                type="button"
+                aria-pressed={value[key] === o.value}
+                onClick={() => onPick(key, value[key] === o.value ? "" : o.value)}
+                className={`${filterRow} ${value[key] === o.value ? "text-selected" : ""}`}
+              >
+                {o.label}
+              </button>
+            ))
+          : []),
+      ])}
+    </div>
   );
 }
 
-const inputCls =
-  "min-h-[46px] w-full rounded-[16px] border border-stroke2 bg-bg5 px-6 py-[12px] text-[16px] leading-5 font-medium text-black outline-none placeholder:text-black/50 focus:border-stroke";
-
-export function TextInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
-  return <input {...props} className={`${inputCls} ${props.className ?? ""}`} />;
+/* ---------- Form fields (modal forms) ---------- */
+export function Field({ label, children, className = "", error, htmlFor, required = false }: { label: string; children: ReactNode; className?: string; error?: string; htmlFor?: string; required?: boolean }) {
+  const text = (
+    <span className="text-[18px] font-medium text-black sm:text-[20px]">
+      {label}
+      {required && <RequiredMark />}
+    </span>
+  );
+  return (
+    // The message sits outside the <label> so it is announced (role="alert") but not read as part of the field's name.
+    // htmlFor: a composite control (PhoneInput) is named by id instead of being wrapped, so the label targets its input.
+    <div className={`flex w-full min-w-0 flex-col gap-[6px] ${className}`}>
+      {htmlFor ? (
+        <>
+          <label htmlFor={htmlFor} className="w-fit">
+            {text}
+          </label>
+          {children}
+        </>
+      ) : (
+        <label className="contents">
+          {text}
+          {children}
+        </label>
+      )}
+      <FieldError message={error} />
+    </div>
+  );
 }
 
-export function TextArea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea {...props} className={`${inputCls} h-[86px] resize-none ${props.className ?? ""}`} />;
+/** The asterisk after a required field's label. Screen readers get aria-required on the input instead. */
+export const RequiredMark = () => (
+  <span aria-hidden className="ml-1 text-danger">
+    *
+  </span>
+);
+
+const inputCls =
+  "min-h-[46px] w-full rounded-[16px] border border-stroke2 bg-bg5 px-6 py-[12px] text-[16px] leading-5 font-medium text-black outline-none transition-[border-color,box-shadow] duration-200 placeholder:text-black/50 focus:border-stroke focus:shadow-[0_0_0_3px_rgb(71_215_251/0.25)] aria-invalid:border-danger aria-invalid:focus:shadow-[0_0_0_3px_rgb(249_74_74/0.18)]";
+
+export function TextInput(props: React.ComponentProps<"input">) {
+  return <input suppressHydrationWarning {...props} className={`${inputCls} ${props.className ?? ""}`} />;
+}
+
+export function TextArea(props: React.ComponentProps<"textarea">) {
+  return <textarea suppressHydrationWarning {...props} className={`${inputCls} h-[86px] resize-none ${props.className ?? ""}`} />;
 }
 
 // Dropdown field: input-styled trigger + designed option list (Figma 1:7760 / 1:7751 style)
-export function SelectField({ value, options, onChange, placeholder, icon = "arrow-right", iconSize = 18, iconClass = "rotate-90 text-black", className = "" }: {
+export function SelectField({ value, options, onChange, placeholder, icon = "arrow-right", iconSize = 18, iconClass = "rotate-90 text-black", className = "", invalid = false }: {
   value: string;
   options: string[];
   onChange: (v: string) => void;
@@ -239,20 +482,22 @@ export function SelectField({ value, options, onChange, placeholder, icon = "arr
   iconSize?: number;
   iconClass?: string;
   className?: string; // extra trigger classes
+  invalid?: boolean; // red outline, like an invalid text input
 }) {
   const ref = useRef<HTMLButtonElement>(null);
   const [open, setOpen] = useState(false);
   const [width, setWidth] = useState(0);
   return (
     <>
-      <button
+      <button suppressHydrationWarning
         ref={ref}
         type="button"
+        data-invalid={invalid || undefined}
         onClick={() => {
           setWidth(ref.current?.offsetWidth ?? 0);
           setOpen(true);
         }}
-        className={`${inputCls} flex cursor-pointer items-center justify-between text-left ${className}`}
+        className={`${inputCls} flex cursor-pointer items-center justify-between text-left data-invalid:border-danger ${className}`}
       >
         <span className={value ? "" : "opacity-50"}>{value || placeholder}</span>
         <Icon name={icon} size={iconSize} className={iconClass} />
@@ -261,13 +506,13 @@ export function SelectField({ value, options, onChange, placeholder, icon = "arr
         <ul className="overflow-hidden rounded-[9px] border border-stroke2 bg-primary" style={{ width }}>
           {options.map((o) => (
             <li key={o}>
-              <button
+              <button suppressHydrationWarning
                 type="button"
                 onClick={() => {
                   onChange(o);
                   setOpen(false);
                 }}
-                className="w-full cursor-pointer border-b-[0.5px] border-stroke2 px-4 py-[10px] text-left text-[16px] tracking-[-0.32px] text-nav last:border-b-0"
+                className="w-full cursor-pointer border-b-[0.5px] border-stroke2 px-4 py-[10px] text-left text-[16px] tracking-[-0.32px] text-nav last:border-b-0 hover:bg-bg5 focus-visible:bg-bg5 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus"
               >
                 {o}
               </button>

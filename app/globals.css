@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* dark: utilities follow the theme switch in the header (html.dark), not the operating system setting. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 /* Tokens = Figma variables (get_variable_defs on the MCL frames) */
 @theme {
   --color-primary: #f8fcfd;
@@ -23,11 +26,65 @@
     from { opacity: 0; }
     to { opacity: 1; }
   }
+
+  /* Same 300 ms ease-out, with an 8 px lift: toasts, inline errors, the login card. */
+  --animate-rise: rise 300ms cubic-bezier(0, 0, 0.58, 1);
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: none; }
+  }
+
+  /* Status colours already used by the Badge pills (components/ui.tsx). */
+  --color-success: #30a74e;
+  --color-danger: #f94a4a;
+  --color-warn: #f80;
+
+  /* Accent colours that differ between themes (one blue can't be both a fill under white text and readable text
+     on a dark page): link text, the chosen option / brand text, keyboard focus rings; and the dim layer behind
+     dialogs, which stays dark in both themes. */
+  --color-link: #304dc3;
+  --color-selected: #152eaf;
+  --color-focus: #304dc3;
+  --color-scrim: #000;
+}
+
+/* Dark theme: the same tokens with dark values. `black` is the app's text ink, so every text-black turns light;
+   blues are lightened where they are text and kept deep where white text sits on them. Contrast was checked
+   against the dark surfaces (body text ≥ 4.5:1, borders and focus rings ≥ 3:1). */
+.dark {
+  color-scheme: dark; /* native controls (date pickers, autofill, checkboxes) go dark too */
+  --color-black: #e7edf3;
+  --color-primary: #131c27;
+  --color-bg5: #0b121b;
+  --color-nav: #c3cdd8;
+  --color-muted: #97a2b0;
+  --color-secondary: #2b46bd;
+  --color-button: #4361dd;
+  --color-stroke: #2aa9c9;
+  --color-stroke2: rgb(71 215 251 / 0.24);
+  --color-link: #93a6ff;
+  --color-selected: #a9b7ff;
+  --color-focus: #93a6ff;
 }
 
 body {
   background: var(--color-bg5);
-  color: #000;
+  color: var(--color-black);
+}
+
+/* Switching themes cross-fades the whole page once (lib/theme.ts; skipped for reduced motion). */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 280ms;
+  animation-timing-function: cubic-bezier(0, 0, 0.58, 1);
+}
+
+/* Scroll without visible scrollbars (wheel / touch / keyboard still scroll) */
+* {
+  scrollbar-width: none;
+}
+*::-webkit-scrollbar {
+  display: none;
 }
 
 /* Figma leading-[normal]: Montserrat metrics (968 + 251) / 1000, text box rounded to whole px */
@@ -47,9 +104,27 @@ body {
   mask: var(--icon) center / contain no-repeat;
 }
 
+/* Skeleton placeholders (components/skeletons.tsx): a soft band sweeps across a tint of the theme's own surface and
+   accent colours, so they suit both themes and both surfaces (cards and the page). */
+.skeleton {
+  --sk: color-mix(in srgb, var(--color-stroke) 18%, var(--color-primary));
+  --sk-hi: color-mix(in srgb, var(--color-stroke) 34%, var(--color-primary));
+  background: linear-gradient(100deg, var(--sk) 40%, var(--sk-hi) 50%, var(--sk) 60%) 0 0 / 300% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+@keyframes shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
+  }
+  /* No sweep at all (a near-zero duration would flicker): a still block. */
+  .skeleton {
+    animation: none;
+    background: var(--sk);
   }
 }

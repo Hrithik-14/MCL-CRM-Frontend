@@ -1,9 +1,14 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { Icon } from "@/components/Icon";
-import { Badge, IconButton, Modal, ModalActions, Pagination, Popover, PrimaryButton, SearchBox, SelectField, TextInput, ToolButton } from "@/components/ui";
-import { ROLE_OPTIONS, UNLISTED_USERS, USERS, type User } from "@/lib/mock/users";
+import { useConfirm, useToast } from "@/components/feedback";
+import { PhoneInput } from "@/components/PhoneInput";
+import { SkeletonRows, SubtitleSkeleton } from "@/components/skeletons";
+import { Badge, EmptyState, IconButton, LoadFailed, Modal, ModalActions, Pagination, Popover, PrimaryButton, SearchBox, SelectField, TextInput, ToolButton } from "@/components/ui";
+import { api, cap, day, fieldErrors, paging, useApi, useDebounced, type List } from "@/lib/api";
+import { phoneError } from "@/lib/phone";
+import { useMe } from "@/components/Shell";
 import { UField, USER_MODAL, WIDE_ACTIONS } from "./form";
 import { SectionHeader, UnderlineTabs } from "./SectionHeader";
 
@@ -11,6 +16,19 @@ export const USER_TABS = [
   { label: "User", href: "/users", cls: "w-[100px] px-[10px]" },
   { label: "Role", href: "/users/roles", cls: "w-[90px] px-[10px]" },
 ];
+
+type User = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string | null;
+  status: "active" | "inactive";
+  role: { id: string; name: string };
+  assignedLeads: number;
+  convertedLeads: number;
+  createdAt: string;
+};
+export type RoleSummary = { id: string; name: string; permissions: string[]; userCount: number; members: { initials: string }[]; extraMembers: number };
 
 // Figma 1:6530 column widths (sum 1150 = card content width); columns grow proportionally on wider screens.
 const col = (w: number) => ({ flex: `${w} 0 0`, minWidth: w });
@@ -20,54 +38,160 @@ const HEAD: [string, number, string?][] = [
 ];
 const cell = "text-[16px] font-medium text-black";
 
-type Draft = Pick<User, "name" | "email" | "phone" | "role">;
-const EMPTY: Draft = { name: "", email: "", phone: "", role: "" };
-type Filter = { role?: string; status?: User["status"] };
+type Draft = { name: string; email: string; phone: string; role: string; password: string };
+const EMPTY: Draft = { name: "", email: "", phone: "", role: "", password: "" };
+type Filter = { roleId?: string; status?: User["status"] };
 
 export function UsersPage() {
-  const [users, setUsers] = useState(USERS);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
   const [filter, setFilter] = useState<Filter>({});
   const [filterOpen, setFilterOpen] = useState(false);
   const [roleMenu, setRoleMenu] = useState(false);
   const filterRef = useRef<HTMLButtonElement>(null);
-  // editing: null = closed, 0 = Create New User (1:7919), id = Edit User (1:7950)
-  const [editing, setEditing] = useState<number | null>(null);
+  // editing: null = closed, "" = Create New User (1:7919), id = Edit User (1:7950)
+  const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState(EMPTY);
+  const [errors, setErrors] = useState<Record<string, string>>({}); // keyed by API field: name, email, phone, roleId, password
+  const [savedPhone, setSavedPhone] = useState(""); // the edited user's phone as stored
+  const phoneId = useId();
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const toast = useToast();
+  const confirm = useConfirm();
 
-  const q = query.trim().toLowerCase();
-  const visible = users.filter(
-    (u) =>
-      (!q || [u.name, u.role, u.email].join(" ").toLowerCase().includes(q)) &&
-      (!filter.role || u.role === filter.role) &&
-      (!filter.status || u.status === filter.status),
-  );
-  const total = users.length + UNLISTED_USERS;
+  const roles = useApi<RoleSummary[]>("/roles").data ?? [];
+  const users = useApi<List<User>>("/users", { q: useDebounced(query), roleId: filter.roleId, status: filter.status, page });
+  const list = users.data;
+  const filtered = !!(query.trim() || filter.roleId || filter.status);
 
   const open = (u?: User) => {
-    setDraft(u ? { name: u.name, email: u.email, phone: u.phone, role: u.role } : EMPTY);
-    setEditing(u ? u.id : 0);
+    setDraft(u ? { name: u.name, email: u.email, phone: u.phone ?? "", role: u.role.name, password: "" } : EMPTY);
+    setSavedPhone(u?.phone ?? "");
+    setErrors({});
+    setEditing(u ? u.id : "");
   };
-  const close = () => setEditing(null);
-  const save = () => {
-    if (editing) setUsers((us) => us.map((u) => (u.id === editing ? { ...u, ...draft } : u)));
-    else if (draft.name.trim())
-      setUsers((us) => [...us, { ...draft, id: Math.max(0, ...us.map((u) => u.id)) + 1, role: draft.role || "Admin", status: "Active", assigned: 0, converted: 0, created: new Date().toLocaleDateString("en-US") }]);
-    close();
+  // Closing (×, Cancel, Escape, outside click) never saves, and never keeps a typed password around.
+  const close = () => {
+    setEditing(null);
+    setDraft((d) => ({ ...d, password: "" }));
+  };
+
+  // Checked here first so obvious mistakes show instantly; the server still validates everything.
+  const validate = (roleId?: string) => {
+    const e: Record<string, string> = {};
+    if (!draft.name.trim()) e.name = "Enter the user's name";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(draft.email.trim())) e.email = "Enter a valid email address";
+    if (!roleId) e.roleId = "Select a role";
+    const phone = draft.phone !== savedPhone && phoneError(draft.phone); // an untouched saved number is not re-checked
+    if (phone) e.phone = phone;
+    // Required on create; on edit only checked when a new one is typed (blank keeps the current password).
+    if (!editing || draft.password) {
+      if (draft.password.length < 8) e.password = "Use at least 8 characters";
+      else if (draft.password.length > 128) e.password = "Use at most 128 characters";
+    }
+    return e;
+  };
+
+  const save = async () => {
+    if (saving) return; // a second click while the first save is in flight does nothing
+    const roleId = roles.find((r) => r.name === draft.role)?.id;
+    const local = validate(roleId);
+    setErrors(local);
+    if (Object.keys(local).length) return;
+    setSaving(true);
+    // An untouched phone is left out, so a number saved in an older format is never rewritten by an unrelated edit.
+    const body = { name: draft.name, email: draft.email, phone: draft.phone === savedPhone ? undefined : draft.phone, roleId };
+    try {
+      if (editing) {
+        const newPassword = draft.password; // sent only when typed: a blank field must not reset anything
+        const u = await api<User>(`/users/${editing}`, { method: "PATCH", body: { ...body, ...(newPassword && { password: newPassword }) } });
+        // Show the saved values straight away; lead counts are unchanged by an edit, so they are kept.
+        users.mutate((l) => ({ ...l, items: l.items.map((x) => (x.id === u.id ? { ...x, ...u } : x)) }));
+        toast.success(
+          "User updated",
+          !newPassword
+            ? `${u.name}'s details were saved.`
+            : u.id === me?.id
+              ? "Your details and password were saved. Your other devices were signed out."
+              : `${u.name}'s details and password were saved. They'll sign in again with the new password.`,
+        );
+      } else {
+        const u = await api<User>("/users", { method: "POST", body: { ...body, password: draft.password } });
+        if (filtered) users.reload(); // the new user may or may not match the current search
+        else
+          // Newest users sort last: add it to this page when this is the last page, and count it either way.
+          users.mutate((l) => ({
+            ...l,
+            total: l.total + 1,
+            items: l.page * l.pageSize >= l.total && l.items.length < l.pageSize ? [...l.items, u] : l.items,
+          }));
+        toast.success("User created", `${u.name} can now sign in with the password you set.`);
+      }
+      close();
+    } catch (err) {
+      const fields = fieldErrors(err);
+      if (Object.keys(fields).length) setErrors(fields.email === "Already in use" ? { ...fields, email: "A user with this email already exists" } : fields); // shown under the matching fields; typed values are kept
+      else toast.apiError(err, editing ? "Couldn't update the user" : "Couldn't create the user");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async (u: User) => {
+    const ok = await confirm({
+      title: "Remove user?",
+      message: (
+        <>
+          <b className="text-black">{u.name}</b> will lose access immediately. Their history is kept: the account is deactivated, or deleted if it has none.
+        </>
+      ),
+      confirmLabel: "Remove user",
+      danger: true,
+    });
+    if (!ok) return;
+    setDeleting(u.id);
+    try {
+      await api(`/users/${u.id}`, { method: "DELETE" });
+      toast.success("User removed", `${u.name} can no longer sign in.`);
+      users.reload(); // the account is either gone or now inactive; the server decides which
+    } catch (err) {
+      toast.apiError(err, "Couldn't remove the user");
+    } finally {
+      setDeleting(null);
+    }
   };
   const pick = (f: Filter) => {
     // Picking the active option again clears it.
-    setFilter((cur) => (f.role ? { ...cur, role: cur.role === f.role ? undefined : f.role } : { ...cur, status: cur.status === f.status ? undefined : f.status }));
+    setFilter((cur) => (f.roleId ? { ...cur, roleId: cur.roleId === f.roleId ? undefined : f.roleId } : { ...cur, status: cur.status === f.status ? undefined : f.status }));
+    setPage(1);
     setFilterOpen(false);
   };
-  const set = (k: keyof Draft) => (v: string) => setDraft((d) => ({ ...d, [k]: v }));
+  const me = useMe();
+  const passwordId = useId();
+  const set = (k: keyof Draft) => (v: string) => {
+    setDraft((d) => ({ ...d, [k]: v }));
+    setErrors((e) => ({ ...e, [k === "role" ? "roleId" : k]: "" })); // the message goes once the field is edited
+  };
+  const passwordField = (
+    <UField label={editing ? "New Password" : "Password"} htmlFor={passwordId} error={errors.password} required={!editing}>
+      <PasswordInput
+        id={passwordId}
+        value={draft.password}
+        onChange={set("password")}
+        placeholder={editing ? "Leave blank to keep the current password" : "At least 8 characters"}
+        invalid={!!errors.password}
+        required={!editing}
+      />
+    </UField>
+  );
 
   const option = "flex w-full cursor-pointer items-center justify-between border-b-[0.5px] border-stroke2 px-4 py-[10px] text-left text-[16px] tracking-[-0.32px] text-nav";
 
   return (
     <div className="flex flex-col gap-[18px] p-4 sm:p-6">
       {/* Add User (1:6509) → OVERLAY Create New User 1:7919, instant */}
-      <SectionHeader title="User Management" subtitle={`${total} Users`} action={<PrimaryButton onClick={() => open()}>Add User</PrimaryButton>} />
+      <SectionHeader title="User Management" subtitle={list ? `${list.total} Users` : !users.error && <SubtitleSkeleton />} action={<PrimaryButton onClick={() => open()}>Add User</PrimaryButton>} />
       <UnderlineTabs tabs={USER_TABS} active={0} />
 
       {/* Figma lays children out at x=21 (stroke included in layout) → px-20 + 1px border */}
@@ -75,7 +199,13 @@ export function UsersPage() {
         <div className="flex flex-wrap items-center justify-between gap-2 pt-6 pb-[30px]">
           <h2 className="text-[28px] font-medium text-black">Users</h2>
           <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
-            <SearchBox value={query} onChange={setQuery} />
+            <SearchBox
+              value={query}
+              onChange={(v) => {
+                setQuery(v);
+                setPage(1);
+              }}
+            />
             <ToolButton label="Filter" icon="filter" btnRef={filterRef} onClick={() => setFilterOpen(true)} />
           </div>
         </div>
@@ -89,22 +219,26 @@ export function UsersPage() {
                 </p>
               ))}
             </div>
-            {visible.map((u) => (
+            {!list ? (
+              users.error ? <LoadFailed what="users" onRetry={users.reload} /> : <SkeletonRows columns={HEAD.map(([, w]) => w)} grow />
+            ) : list.items.length === 0 ? (
+              <EmptyState>{filtered ? "No users match your search or filters." : "No users yet. Use Add User to create the first one."}</EmptyState>
+            ) : null}
+            {list?.items.map((u) => (
               <div key={u.id} className="flex items-center border-b border-stroke2 pt-[10px] pb-4">
                 <p className={`${cell} tracking-[-0.64px]`} style={col(200)}>{u.name}</p>
-                <p className={`${cell} tracking-[-0.64px]`} style={col(100)}>{u.role}</p>
+                <p className={`${cell} tracking-[-0.64px]`} style={col(100)}>{u.role.name}</p>
                 <p className={`${cell} tracking-[-0.64px]`} style={col(200)}>{u.email}</p>
                 <div style={col(130)}>
-                  <Badge label={u.status} width={80} />
+                  <Badge label={cap(u.status)} width={80} />
                 </div>
-                <p className={`${cell} text-center tracking-[-0.64px]`} style={col(160)}>{u.assigned}</p>
-                <p className={`${cell} text-center tracking-[-0.64px]`} style={col(100)}>{u.converted}</p>
-                <p className={`${cell} text-center`} style={col(140)}>{u.created}</p>
+                <p className={`${cell} text-center tracking-[-0.64px]`} style={col(160)}>{u.assignedLeads}</p>
+                <p className={`${cell} text-center tracking-[-0.64px]`} style={col(100)}>{u.convertedLeads}</p>
+                <p className={`${cell} text-center`} style={col(140)}>{day(u.createdAt)}</p>
                 <div className="flex items-center justify-center gap-1" style={col(120)}>
                   {/* Edit (1:6551) → OVERLAY Edit User 1:7950, instant. Figma: edit 46×38, delete 46×36 */}
                   <IconButton icon="edit" label={`Edit ${u.name}`} className="h-[38px]!" onClick={() => open(u)} />
-                  {/* Delete: no prototype action → removes the row locally */}
-                  <IconButton icon="delete" label={`Delete ${u.name}`} onClick={() => setUsers((us) => us.filter((x) => x.id !== u.id))} />
+                  <IconButton icon="delete" label={`Delete ${u.name}`} onClick={() => remove(u)} disabled={deleting === u.id} />
                 </div>
               </div>
             ))}
@@ -112,48 +246,80 @@ export function UsersPage() {
         </div>
 
         <div className="pt-[10px]">
-          <Pagination label={`Showing 1 to ${visible.length} of ${total} Users`} />
+          <Pagination {...paging(list, "Users", setPage)} />
         </div>
       </section>
 
       {/* Filter → dropdown 1:7981 (MANUAL, 25% backdrop, close on outside click) */}
       <Popover anchor={filterRef} open={filterOpen} onClose={() => setFilterOpen(false)} dx={-38} dy={54}>
         <div className="w-[142px] overflow-hidden rounded-[9px] border border-stroke2 bg-primary">
-          <button type="button" aria-expanded={roleMenu} onClick={() => setRoleMenu((o) => !o)} className={option}>
+          <button suppressHydrationWarning type="button" aria-expanded={roleMenu} onClick={() => setRoleMenu((o) => !o)} className={option}>
             Role
             <Icon name="arrow-right" size={18} className={`text-nav transition-transform ${roleMenu ? "-rotate-90" : "rotate-90"}`} />
           </button>
           {roleMenu &&
-            ROLE_OPTIONS.map((r) => (
-              <button key={r} type="button" onClick={() => pick({ role: r })} className={`${option} pl-7 ${filter.role === r ? "bg-bg5" : ""}`}>
-                {r}
+            roles.map((r) => (
+              <button suppressHydrationWarning key={r.id} type="button" onClick={() => pick({ roleId: r.id })} className={`${option} pl-7 ${filter.roleId === r.id ? "bg-bg5" : ""}`}>
+                {r.name}
               </button>
             ))}
-          {(["Active", "Inactive"] as const).map((s) => (
-            <button key={s} type="button" onClick={() => pick({ status: s })} className={`${option} last:border-b-0 ${filter.status === s ? "bg-bg5" : ""}`}>
-              {s}
+          {(["active", "inactive"] as const).map((s) => (
+            <button suppressHydrationWarning key={s} type="button" onClick={() => pick({ status: s })} className={`${option} last:border-b-0 ${filter.status === s ? "bg-bg5" : ""}`}>
+              {cap(s)}
             </button>
           ))}
         </div>
       </Popover>
 
-      <Modal open={editing !== null} onClose={close} title={editing ? "Edit User" : "Create New User"} className={`w-[762px] ${USER_MODAL} [&>button]:text-white`}>
-        <UField label="User Name">
-          <TextInput value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="eg., Praveen" />
+      <Modal open={editing !== null} onClose={close} title={editing ? "Edit User" : "Create New User"} className={`w-[762px] ${USER_MODAL}`}>
+        <UField label="User Name" error={errors.name} required>
+          <TextInput value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="eg., Praveen" aria-invalid={!!errors.name} aria-required />
         </UField>
-        <UField label="Email ID">
-          <TextInput type="email" value={draft.email} onChange={(e) => set("email")(e.target.value)} placeholder="eg., afasfg@gmail.com" />
+        <UField label="Email ID" error={errors.email} required>
+          <TextInput type="email" value={draft.email} onChange={(e) => set("email")(e.target.value)} placeholder="eg., afasfg@gmail.com" aria-invalid={!!errors.email} aria-required />
         </UField>
-        <UField label="Phone">
-          <TextInput type="tel" value={draft.phone} onChange={(e) => set("phone")(e.target.value)} placeholder="9+87463419684614" />
+        <UField label="Phone" htmlFor={phoneId}>
+          <PhoneInput id={phoneId} defaultValue={draft.phone} onChange={set("phone")} error={errors.phone || undefined} />
         </UField>
-        <UField label="Roles">
-          <SelectField value={draft.role} options={ROLE_OPTIONS} onChange={set("role")} placeholder="Admin" />
+        {editing && passwordField}
+        <UField label="Roles" error={errors.roleId} required>
+          <SelectField value={draft.role} options={roles.map((r) => r.name)} onChange={set("role")} placeholder="Admin" invalid={!!errors.roleId} />
         </UField>
+        {/* Business decision: the admin sets the first password here; no invite email. */}
+        {!editing && passwordField}
         <div className={WIDE_ACTIONS}>
-          <ModalActions onCancel={close} onDone={save} />
+          <ModalActions onCancel={close} onDone={save} pending={saving} pendingLabel={editing ? "Saving…" : "Creating…"} />
         </div>
       </Modal>
+    </div>
+  );
+}
+
+function PasswordInput({ id, value, onChange, placeholder, invalid, required }: { id: string; value: string; onChange: (v: string) => void; placeholder: string; invalid: boolean; required: boolean }) {
+  const [show, setShow] = useState(false);
+  return (
+    <div className="relative">
+      <TextInput
+        id={id}
+        type={show ? "text" : "password"}
+        autoComplete="new-password"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        aria-invalid={invalid}
+        aria-required={required || undefined}
+        className="pr-14!"
+      />
+      <button
+        suppressHydrationWarning
+        type="button"
+        aria-label={show ? "Hide password" : "Show password"}
+        aria-pressed={show}
+        onClick={() => setShow(!show)}
+        className="absolute top-1/2 right-4 flex size-8 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full text-nav transition-colors hover:bg-[rgb(71_215_251/0.2)] focus-visible:outline-2 focus-visible:outline-focus"
+      >
+        <Icon name="eye" size={20} className={`transition-opacity ${show ? "" : "opacity-50"}`} />
+      </button>
     </div>
   );
 }

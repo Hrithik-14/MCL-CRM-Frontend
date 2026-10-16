@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "@/components/Icon";
+import { useToast } from "@/components/feedback";
 import { PageHeader, Popover, SelectField, ToolButton } from "@/components/ui";
 import {
   BREAKDOWN_HEAD, BREAKDOWN_ROWS, BREAKDOWN_TOTAL, COUNTRIES, DOC_TYPES, RATE_CHART_REF, RATE_HEAD, RATE_ROWS,
@@ -96,6 +97,7 @@ const column = "flex min-w-[257px] flex-1 flex-col justify-center gap-3";
 export default function CalculatorPage() {
   // Figma toggle 1:8171: "Default" variant (1:8172) = NDOX selected.
   const [doc, setDoc] = useState<DocType>("NDOX");
+  const toast = useToast();
   const [country, setCountry] = useState(COUNTRIES[0]);
   const [weight, setWeight] = useState("1.500");
   const kg = Math.min(MAX_KG, Math.max(0, Number(weight) || 0));
@@ -129,12 +131,12 @@ export default function CalculatorPage() {
                 className={`absolute top-1 bottom-1 left-1 w-[120px] rounded-[12px] bg-button transition-transform ${doc === "NDOX" ? "translate-x-[127px]" : ""}`}
               />
               {DOC_TYPES.map((d) => (
-                <button
+                <button suppressHydrationWarning
                   key={d}
                   type="button"
                   aria-pressed={doc === d}
                   onClick={() => setDoc(d)}
-                  className={`relative w-[120px] cursor-pointer px-4 py-[10px] text-[16px] font-medium transition-colors ${doc === d ? "text-primary" : "text-black"}`}
+                  className={`relative w-[120px] cursor-pointer px-4 py-[10px] text-[16px] font-medium transition-colors ${doc === d ? "text-white" : "text-black"}`}
                 >
                   {d}
                 </button>
@@ -156,7 +158,7 @@ export default function CalculatorPage() {
           <div className={column}>
             <p className={label}>Weight (in kgs)</p>
             <label className="flex h-[50px] w-[200px] items-center gap-2 rounded-[16px] border border-stroke2 bg-bg5 pr-3 pl-6 text-[16px] font-medium text-nav">
-              <input
+              <input suppressHydrationWarning
                 inputMode="decimal"
                 aria-label="Weight (in kgs)"
                 value={weight}
@@ -168,14 +170,19 @@ export default function CalculatorPage() {
             </label>
           </div>
           {/* No prototype action, and the mock tariffs can't be derived from the inputs. */}
-          <button type="button" className="h-[49px] shrink-0 cursor-pointer rounded-[16px] bg-button px-[18px] text-[16px] font-medium whitespace-nowrap text-white">
+          <button
+            suppressHydrationWarning
+            type="button"
+            onClick={() => toast.info("Live rates aren't available yet", "The table below shows sample tariffs until real courier rates are connected.")}
+            className="h-[49px] shrink-0 cursor-pointer rounded-[16px] bg-button px-[18px] text-[16px] font-medium whitespace-nowrap text-white"
+          >
             Calculate Rates
           </button>
         </div>
         <p className="text-[12px] text-black opacity-50">Rate Calculator Supports Shipments Up To {MAX_KG} kg</p>
       </section>
 
-      <Card title="Courier Rate Comparison" note={FSC_NOTE} action={<ToolButton label="Download" icon="download" />}>
+      <Card title="Courier Rate Comparison" note={FSC_NOTE} action={<ToolButton label="Download" icon="download" onClick={() => toast.info("Download isn't available yet", "Rate exports will be added with live rates.")} />}>
         <Table cols={RATE_COLS} head={RATE_HEAD} rows={RATE_ROWS} total={RATE_TOTAL} />
       </Card>
 
@@ -217,7 +224,7 @@ export default function CalculatorPage() {
           head={RECENT_HEAD}
           rows={recent.map((r) => [
             r.date, r.doc, r.country, r.weight, r.rates, r.tariff,
-            <button
+            <button suppressHydrationWarning
               key="more"
               type="button"
               aria-label="More actions"
@@ -236,7 +243,7 @@ export default function CalculatorPage() {
       {/* ⋮ → Edit/Delete menu 1:8158: MANUAL overlay at (-131.39, 24.6) from the icon, 25% backdrop */}
       <Popover anchor={moreRef} open={menuId !== null} onClose={() => setMenuId(null)} dx={-131.39} dy={24.6}>
         <div className="flex w-[156px] flex-col overflow-hidden rounded-[16px] border border-stroke2 bg-bg5 text-[16px] tracking-[-0.64px] text-nav">
-          <button
+          <button suppressHydrationWarning
             type="button"
             onClick={() => {
               setDraft(recent.find((r) => r.id === menuId) ?? null);
@@ -247,7 +254,7 @@ export default function CalculatorPage() {
             <Icon name="edit" size={22} />
             Edit
           </button>
-          <button
+          <button suppressHydrationWarning
             type="button"
             onClick={() => {
               setRecent((rs) => rs.filter((r) => r.id !== menuId));
@@ -263,28 +270,28 @@ export default function CalculatorPage() {
 
       {/* Edit overlay 1:8122: CENTER, 50% backdrop, closes on click outside / Esc, opens instantly */}
       {draft && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={() => setDraft(null)}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/50 p-4" onMouseDown={() => setDraft(null)}>
           <div
             role="dialog"
             aria-modal
             aria-label="Edit"
             onMouseDown={(e) => e.stopPropagation()}
-            className="flex max-h-[calc(100dvh-32px)] w-[966px] max-w-full flex-col items-end gap-6 overflow-y-auto rounded-[24px] border border-[#1e2834] bg-primary p-5 font-inter font-medium sm:p-8"
+            className="flex max-h-[calc(100dvh-32px)] w-[966px] max-w-full flex-col items-end gap-6 overflow-y-auto rounded-[24px] border border-[#1e2834] bg-primary dark:border-stroke2 p-5 font-inter font-medium sm:p-8"
           >
             <div className="flex w-full flex-col gap-4">
               <div className="flex items-start justify-between border-b border-stroke2 pb-8">
                 <h2 className="text-[30px] leading-9 text-black">Edit</h2>
                 {/* Figma's close glyph is white (1:8128) */}
-                <button type="button" aria-label="Close" onClick={() => setDraft(null)} className="cursor-pointer text-white">
+                <button suppressHydrationWarning type="button" aria-label="Close" onClick={() => setDraft(null)} className="cursor-pointer text-white">
                   <Icon name="close" />
                 </button>
               </div>
               <div className="grid gap-x-2 gap-y-4 sm:grid-cols-2">
                 <EditField label="Date & Time">
-                  <input value={draft.date} onChange={(e) => set("date")(e.target.value)} placeholder="eg,26 jul 2026, 10:34 pm" className={editInput} />
+                  <input suppressHydrationWarning value={draft.date} onChange={(e) => set("date")(e.target.value)} placeholder="eg,26 jul 2026, 10:34 pm" className={editInput} />
                 </EditField>
                 <EditField label="Country">
-                  <input value={draft.country} onChange={(e) => set("country")(e.target.value)} className={editInput} />
+                  <input suppressHydrationWarning value={draft.country} onChange={(e) => set("country")(e.target.value)} className={editInput} />
                 </EditField>
               </div>
               <div className="grid items-center gap-x-2 gap-y-4 sm:grid-cols-3">
@@ -298,27 +305,27 @@ export default function CalculatorPage() {
                   />
                 </EditField>
                 <EditField label="Weight">
-                  <input value={draft.weight} onChange={(e) => set("weight")(e.target.value)} placeholder="000 kg" inputMode="decimal" className={editInput} />
+                  <input suppressHydrationWarning value={draft.weight} onChange={(e) => set("weight")(e.target.value)} placeholder="000 kg" inputMode="decimal" className={editInput} />
                 </EditField>
                 <EditField label="Rate">
-                  <input value={draft.rates} onChange={(e) => set("rates")(e.target.value)} placeholder="eg,26 jul 2026, 10:34 pm" className={editInput} />
+                  <input suppressHydrationWarning value={draft.rates} onChange={(e) => set("rates")(e.target.value)} placeholder="eg,26 jul 2026, 10:34 pm" className={editInput} />
                 </EditField>
               </div>
               <EditField label="Tariff">
-                <input value={draft.tariff} onChange={(e) => set("tariff")(e.target.value)} placeholder="eg., ORD-20260..." className={editInput} />
+                <input suppressHydrationWarning value={draft.tariff} onChange={(e) => set("tariff")(e.target.value)} placeholder="eg., ORD-20260..." className={editInput} />
               </EditField>
             </div>
             <div className="flex gap-[6px] text-[18px]">
-              <button type="button" onClick={() => setDraft(null)} className="h-[41px] cursor-pointer rounded-[16px] border border-[#00bdd7] bg-white px-[17px] text-[#0f141a]">
+              <button suppressHydrationWarning type="button" onClick={() => setDraft(null)} className="h-[41px] cursor-pointer rounded-[16px] border border-[#00bdd7] bg-white px-[17px] text-black dark:bg-transparent">
                 Cancel
               </button>
-              <button
+              <button suppressHydrationWarning
                 type="button"
                 onClick={() => {
                   setRecent((rs) => rs.map((r) => (r.id === draft.id ? draft : r)));
                   setDraft(null);
                 }}
-                className="h-[41px] cursor-pointer rounded-[16px] bg-button px-[18px] text-primary"
+                className="h-[41px] cursor-pointer rounded-[16px] bg-button px-[18px] text-white"
               >
                 Done
               </button>

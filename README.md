@@ -20,6 +20,15 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## MCL CRM configuration
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `API_URL` | `http://localhost:4000` | MCL-CRM-Backend address; `/api/*` is proxied there (read at build time). |
+| `NEXT_PUBLIC_DEFAULT_PHONE_COUNTRY` | `IN` | Country preselected in phone fields and used to read saved numbers without `+code`. Keep equal to the API's `DEFAULT_PHONE_COUNTRY`; `""` = no preselection. Read at build time. |
+
+`npm test` runs the phone-number checks in `lib/phone.test.mjs` (Node's built-in test runner).
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:

@@ -2,50 +2,109 @@
 
 import { useCallback, useRef, useState } from "react";
 import { Icon } from "@/components/Icon";
-import { Badge, IconButton, Modal, PageHeader, Pagination, Popover, PrimaryButton, SearchBox, ToolButton } from "@/components/ui";
+import { useRemove, useToast } from "@/components/feedback";
+import { Skeleton, SkeletonCards, SkeletonRows, SubtitleSkeleton } from "@/components/skeletons";
+import { Badge, EmptyState, FilterMenu, IconButton, LoadFailed, Modal, PageHeader, Pagination, Popover, PrimaryButton, SearchBox, ToolButton } from "@/components/ui";
 import { HistoryItem } from "@/components/followups/HistoryItem";
-import { NewFollowUpForm } from "@/components/followups/NewFollowUpForm";
-import { FOLLOW_UP_HISTORY, FOLLOW_UPS, type FollowUp } from "@/lib/mock/followups";
+import { NewFollowUpForm, TYPE_LABEL, type FollowUp } from "@/components/followups/NewFollowUpForm";
+import { api, cap, day, paging, useApi, useDebounced, type List } from "@/lib/api";
 
 const text = "shrink-0 text-[16px] font-medium text-black";
+// Figma's one "Mark As Completed" item (1:7999), repeated for each action.
+const menuItem =
+  "flex w-full cursor-pointer items-center gap-[6px] border-b-[0.5px] border-stroke2 px-4 py-[10px] text-left text-[16px] tracking-[-0.32px] whitespace-nowrap text-nav last:border-b-0 hover:bg-[rgb(71_215_251/0.2)] focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus";
+const STATUS_FILTER = [{ key: "status", label: "Status", options: ["pending", "overdue", "completed"].map((s) => ({ value: s, label: cap(s) })) }];
+
+type History = { lead: { id: string; label: string }; completedCount: number; entries: FollowUp[] };
 
 export default function FollowUpsPage() {
-  const [rows, setRows] = useState(FOLLOW_UPS);
   const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("");
+  const [page, setPage] = useState(1);
+  const filterBtn = useRef<HTMLButtonElement>(null);
+  const [filtering, setFiltering] = useState(false);
+  const closeFilter = useCallback(() => setFiltering(false), []);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [version, setVersion] = useState(0);
   const [adding, setAdding] = useState(false);
-  const [menuFor, setMenuFor] = useState<number | null>(null);
+  const [menuFor, setMenuFor] = useState<FollowUp | null>(null);
+  const [completing, setCompleting] = useState<string | null>(null);
+  const [editing, setEditing] = useState<FollowUp | null>(null);
+  const toast = useToast();
   const anchor = useRef<HTMLElement | null>(null);
   const closeMenu = useCallback(() => setMenuFor(null), []);
   const closeModal = useCallback(() => setAdding(false), []);
+  const closeEdit = useCallback(() => setEditing(null), []);
+  const refresh = () => setVersion((v) => v + 1);
+  const { remove, removing } = useRemove(refresh);
 
-  const q = query.trim().toLowerCase();
-  const visible = q ? rows.filter((r) => Object.values(r).join(" ").toLowerCase().includes(q)) : rows;
+  const list = useApi<List<FollowUp> & { pendingCount: number; overdueCount: number }>("/follow-ups", { q: useDebounced(query), status, page }, version);
+  const history = useApi<List<History>>("/follow-ups/history", { page: historyPage, pageSize: 6 }, version);
 
-  const markCompleted = () => {
-    const today = new Date().toLocaleDateString("en-US"); // M/D/YYYY like the mock data
-    setRows((rs) => rs.map((r) => (r.id === menuFor && r.status !== "Completed" ? { ...r, status: "Completed", completed: today } : r)));
+  const markCompleted = async () => {
+    const id = menuFor?.id;
     closeMenu();
+    if (!id || completing) return;
+    setCompleting(id);
+    try {
+      const done = await api<FollowUp>(`/follow-ups/${id}/complete`, { method: "POST" });
+      toast.success("Follow-up completed", `“${done.note}” is marked as done.`);
+      refresh();
+    } catch (err) {
+      toast.apiError(err, "Couldn't complete the follow-up");
+    } finally {
+      setCompleting(null);
+    }
   };
-
-  const add = (f: FollowUp) => {
-    setRows((rs) => [...rs, f]);
-    closeModal();
+  const del = (f: FollowUp) => {
+    closeMenu();
+    remove(f.id, {
+      path: `/follow-ups/${f.id}`,
+      title: "Delete follow-up?",
+      message: (
+        <>
+          <b className="text-black">{f.note}</b> for {f.lead.label} will be deleted. The lead&apos;s activity keeps a note that it was removed.
+        </>
+      ),
+      confirmLabel: "Delete",
+      success: "Follow-up deleted",
+      successDetail: `“${f.note}” was deleted.`,
+      failTitle: "Couldn't delete the follow-up",
+    });
   };
+  const notYet = (what: string) => toast.info(`${what} isn't available yet`, "This will be added once its scope is agreed.");
 
   return (
     <div className="flex flex-col gap-[18px] p-4 sm:p-6">
       <PageHeader
         title="Follow - Up Centre"
-        subtitle="00 Pending"
+        subtitle={list.data ? `${list.data.pendingCount} Pending · ${list.data.overdueCount} Overdue` : !list.error && <SubtitleSkeleton />}
         action={<PrimaryButton onClick={() => setAdding(true)}>Add Follow - Up</PrimaryButton>}
       />
 
       <section className="flex min-w-0 flex-col gap-[10px] rounded-[22px] border border-stroke2 bg-primary px-5">
         <div className="flex flex-wrap items-center justify-end gap-2 pt-6 pb-5">
-          <SearchBox value={query} onChange={setQuery} />
-          {/* Report / Filter: no prototype action or overlay for this screen */}
-          <ToolButton label="Report" icon="download" />
-          <ToolButton label="Filter" icon="filter" />
+          <SearchBox
+            value={query}
+            onChange={(v) => {
+              setQuery(v);
+              setPage(1);
+            }}
+          />
+          {/* Report: export scope not decided yet (report O1) */}
+          <ToolButton label="Report" icon="download" onClick={() => notYet("Follow-up export")} />
+          <ToolButton label="Filter" icon="filter" btnRef={filterBtn} onClick={() => setFiltering(true)} />
+          <Popover anchor={filterBtn} open={filtering} onClose={closeFilter} dx={-38.2} dy={54}>
+            <FilterMenu
+              groups={STATUS_FILTER}
+              value={{ status }}
+              onPick={(_, value) => {
+                setStatus(value);
+                setPage(1);
+                closeFilter();
+              }}
+            />
+          </Popover>
         </div>
 
         <div className="overflow-x-auto">
@@ -60,29 +119,33 @@ export default function FollowUpsPage() {
               <p className="w-20 text-center">Actions</p>
             </div>
 
-            {visible.map((f) => (
+            {!list.data && !list.error && <SkeletonRows columns={[300, 150, 140, 120, 120, 120, 80]} twoLine />}
+            {!list.data && list.error && <LoadFailed what="follow-ups" onRetry={list.reload} />}
+            {list.data?.items.length === 0 && <EmptyState>{query || status ? "No follow-ups match your search or filter." : "No follow-ups yet. Use Add Follow - Up to schedule one."}</EmptyState>}
+            {list.data?.items.map((f) => (
               <div key={f.id} className="flex items-center border-b border-stroke2 pt-[10px] pb-4">
                 <div className="flex w-[300px] shrink-0 flex-col gap-1 font-medium">
                   <p className="text-[16px] tracking-[-0.64px] text-black">{f.note}</p>
-                  <p className="text-[14px] tracking-[-0.56px] text-button">{f.contact}</p>
+                  <p className="text-[14px] tracking-[-0.56px] text-link">{f.lead.label}</p>
                 </div>
-                <p className={`${text} w-[150px] tracking-[-0.64px]`}>{f.type}</p>
-                <p className={`${text} w-[140px] tracking-[-0.64px]`}>{f.assigned}</p>
+                <p className={`${text} w-[150px] tracking-[-0.64px]`}>{TYPE_LABEL[f.type]}</p>
+                <p className={`${text} w-[140px] tracking-[-0.64px]`}>{f.assignee?.name ?? "------"}</p>
                 <div className="flex w-[120px] shrink-0">
-                  <Badge label={f.status} width={96} />
+                  <Badge label={cap(f.status)} width={96} />
                 </div>
-                <p className={`${text} w-[120px] text-center tracking-[-0.64px]`}>{f.due}</p>
-                <p className={`${text} w-[120px] text-center`}>{f.completed}</p>
+                <p className={`${text} w-[120px] text-center tracking-[-0.64px]`}>{day(f.dueDate)}</p>
+                <p className={`${text} w-[120px] text-center`}>{day(f.completedAt)}</p>
                 <div className="flex w-20 shrink-0 justify-center">
-                  {/* Figma: ON_CLICK → "Mark As Completed" (1:7999), MANUAL overlay at (0,0) of this button, no backdrop */}
+                  {/* Figma: ON_CLICK → "Mark As Completed" (1:7999), MANUAL overlay at (0,0) of this button, no backdrop; Edit and Delete join it */}
                   <span
                     className="inline-flex"
                     onClick={(e) => {
+                      if (completing === f.id || removing === f.id) return;
                       anchor.current = e.currentTarget;
-                      setMenuFor(f.id);
+                      setMenuFor(f);
                     }}
                   >
-                    <IconButton icon="more" label="Follow up actions" className="h-[38px]!" />
+                    <IconButton icon="more" label="Follow up actions" className="h-[38px]!" disabled={completing === f.id || removing === f.id} />
                   </span>
                 </div>
               </div>
@@ -90,32 +153,76 @@ export default function FollowUpsPage() {
           </div>
         </div>
 
-        <Pagination label="Showing 1 to 6 of 2,00 Leads" />
+        <Pagination {...paging(list.data, "Follow-ups", setPage)} />
       </section>
 
       <section className="flex min-w-0 flex-col gap-[10px] rounded-[22px] border border-stroke2 bg-primary px-5">
         <h2 className="pt-12 pb-10 text-[28px] font-medium text-black">Previous Follow Up History</h2>
-        {FOLLOW_UP_HISTORY.map((h) => (
-          <HistoryItem key={h.id} name={h.name} entries={h.entries} />
+        {!history.data && !history.error && (
+          <SkeletonCards className="flex items-center justify-between gap-4 rounded-[24px] border border-stroke2 bg-bg5 px-4 py-5">
+            <Skeleton className="h-5 w-64 max-w-[60%]" />
+            <Skeleton className="h-[25px] w-[110px] rounded-[19px]" />
+          </SkeletonCards>
+        )}
+        {!history.data && history.error && <LoadFailed what="follow-up history" onRetry={history.reload} />}
+        {history.data?.items.map((h) => (
+          <HistoryItem key={h.lead.id} name={h.lead.label} count={h.completedCount} entries={h.entries} />
         ))}
-        <Pagination label="Showing 1 to 6 of 2,00 Leads" />
+        {history.data?.items.length === 0 && <EmptyState>No completed follow-ups yet. They appear here once marked as completed.</EmptyState>}
+        <Pagination {...paging(history.data, "Leads", setHistoryPage)} />
       </section>
 
       <Popover anchor={anchor} open={menuFor !== null} onClose={closeMenu} backdrop={false}>
-        <button
-          type="button"
-          onClick={markCompleted}
-          className="flex cursor-pointer items-center gap-[6px] rounded-[8px] border-b-[0.5px] border-stroke2 bg-bg5 px-4 py-[10px] text-[16px] tracking-[-0.32px] whitespace-nowrap text-nav"
-        >
-          <Icon name="mark" />
-          Mark As Completed
-        </button>
+        <div role="menu" aria-label="Follow up actions" className="flex flex-col overflow-hidden rounded-[8px] bg-bg5">
+          {menuFor && menuFor.status !== "completed" && (
+            <button suppressHydrationWarning type="button" role="menuitem" autoFocus onClick={markCompleted} className={menuItem}>
+              <Icon name="mark" />
+              Mark As Completed
+            </button>
+          )}
+          <button
+            suppressHydrationWarning
+            type="button"
+            role="menuitem"
+            autoFocus={menuFor?.status === "completed"}
+            onClick={() => {
+              setEditing(menuFor);
+              closeMenu();
+            }}
+            className={menuItem}
+          >
+            <Icon name="edit" />
+            Edit
+          </button>
+          <button suppressHydrationWarning type="button" role="menuitem" onClick={() => menuFor && del(menuFor)} className={menuItem}>
+            <Icon name="delete" />
+            Delete
+          </button>
+        </div>
       </Popover>
 
       {/* Figma: "Add Follow - Up" ON_CLICK → New Follow Up (1:8040), TOP_CENTER, 50% backdrop, instant.
           This frame includes its stroke in layout (900px content in 966) → p-32 + 1px border. */}
       <Modal open={adding} onClose={closeModal} title="New Follow Up" className="w-[966px]" top>
-        <NewFollowUpForm onCancel={closeModal} onSave={add} />
+        <NewFollowUpForm
+          onCancel={closeModal}
+          onSaved={() => {
+            closeModal();
+            refresh();
+          }}
+        />
+      </Modal>
+      <Modal open={editing !== null} onClose={closeEdit} title="Edit Follow Up" className="w-[966px]" top>
+        {editing && (
+          <NewFollowUpForm
+            followUp={editing}
+            onCancel={closeEdit}
+            onSaved={() => {
+              closeEdit();
+              refresh();
+            }}
+          />
+        )}
       </Modal>
     </div>
   );

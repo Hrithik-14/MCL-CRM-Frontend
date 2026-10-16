@@ -2,29 +2,47 @@
 
 import { useRef, useState } from "react";
 import { Icon } from "@/components/Icon";
-import { Field, ModalActions, SelectField, TextArea, TextInput } from "@/components/ui";
-import { FOLLOW_UP_TYPE_OPTIONS, LEAD_CONTACT_OPTIONS, type FollowUp } from "@/lib/mock/followups";
+import { useToast } from "@/components/feedback";
+import { Field, ModalActions, SelectField, TextArea } from "@/components/ui";
+import { api, fieldErrors, useApi } from "@/lib/api";
 
-// "2026-10-13" → "10/13/2026" (same M/D/YYYY format as the table)
+export type FollowUp = {
+  id: string;
+  note: string;
+  lead: { id: string; label: string };
+  type: "whatsapp" | "call" | "email" | "meeting";
+  assignee: { id: string; name: string } | null;
+  status: "pending" | "overdue" | "completed";
+  dueDate: string;
+  nextFollowUpDate: string | null;
+  completedAt: string | null;
+  createdAt: string;
+};
+
+export const TYPE_LABEL: Record<FollowUp["type"], string> = { whatsapp: "WhatsApp", call: "Call", email: "Email", meeting: "Meeting" };
+const TYPES = Object.entries(TYPE_LABEL) as [FollowUp["type"], string][];
+
+// "2026-10-13" → "13/10/2026" (en-IN, like the table)
 const fmt = (iso: string) => {
   const [y, m, d] = iso.split("-");
-  return `${+m}/${+d}/${y}`;
+  return `${+d!}/${+m!}/${y}`;
 };
 
 // Figma 1:8057 look ("00/00/0000" + calendar icon); clicking opens the native date picker.
-function DateField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function DateField({ value, onChange, invalid }: { value: string; onChange: (v: string) => void; invalid?: boolean }) {
   const ref = useRef<HTMLInputElement>(null);
   return (
     <div className="relative">
-      <button
+      <button suppressHydrationWarning
         type="button"
         onClick={() => ref.current?.showPicker()}
-        className="flex min-h-[46px] w-full cursor-pointer items-center gap-[10px] rounded-[16px] border border-stroke2 bg-bg5 py-3 pr-[11px] pl-[23px] text-left text-[16px] font-medium text-black"
+        data-invalid={invalid || undefined}
+        className="flex min-h-[46px] w-full cursor-pointer items-center gap-[10px] rounded-[16px] border border-stroke2 bg-bg5 py-3 pr-[11px] pl-[23px] text-left text-[16px] font-medium text-black data-invalid:border-danger"
       >
         <span className={`flex-1 ${value ? "" : "opacity-50"}`}>{value ? fmt(value) : "00/00/0000"}</span>
         <Icon name="calendar" size={18} className="text-nav" />
       </button>
-      <input
+      <input suppressHydrationWarning
         ref={ref}
         type="date"
         tabIndex={-1}
@@ -37,60 +55,97 @@ function DateField({ value, onChange }: { value: string; onChange: (v: string) =
   );
 }
 
-// Figma 1:8040 "New Follow Up" form body (header + X come from <Modal>).
-export function NewFollowUpForm({ onCancel, onSave }: { onCancel: () => void; onSave: (f: FollowUp) => void }) {
+// Figma 1:8040 "New Follow Up" form body (header + X come from <Modal>). With `followUp` it edits that one instead:
+// filled in, its lead fixed (a follow-up stays on its lead), and only the changed assignee is sent.
+// Server field → the form control it belongs to; anything else goes to a toast.
+const FIELDS = ["leadId", "followUpDate", "nextFollowUpDate", "note", "type", "assignedUserId"];
+
+export function NewFollowUpForm({ followUp, onCancel, onSaved }: { followUp?: FollowUp; onCancel: () => void; onSaved: () => void }) {
   const form = useRef<HTMLFormElement>(null);
-  const [lead, setLead] = useState("");
-  const [date, setDate] = useState("");
-  const [next, setNext] = useState("");
-  const [note, setNote] = useState("");
-  const [type, setType] = useState("");
-  const [assigned, setAssigned] = useState("");
+  const lookup = useApi<{ leadId: string; label: string }[]>(followUp ? null : "/lookups/lead-contacts").data ?? [];
+  const leads = followUp ? [{ leadId: followUp.lead.id, label: followUp.lead.label }] : lookup;
+  const users = useApi<{ id: string; name: string }[]>("/users/options", undefined, 0, { keep: true }).data ?? [];
+  const [lead, setLead] = useState(followUp?.lead.label ?? "");
+  const [date, setDate] = useState(followUp?.dueDate ?? "");
+  const [next, setNext] = useState(followUp?.nextFollowUpDate ?? "");
+  const [note, setNote] = useState(followUp?.note ?? "");
+  const [type, setType] = useState(followUp ? TYPE_LABEL[followUp.type] : "");
+  const [assigned, setAssigned] = useState(followUp?.assignee?.name ?? "");
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const toast = useToast();
+  // Changing a field clears its message.
+  const change =
+    <T,>(field: string, set: (v: T) => void) =>
+    (v: T) => {
+      set(v);
+      setErrors((x) => (x[field] ? { ...x, [field]: "" } : x));
+    };
 
   return (
     <form
       ref={form}
-      onSubmit={(e) => {
+      noValidate
+      onSubmit={async (e) => {
         e.preventDefault();
-        onSave({
-          id: Date.now(),
-          note: note.trim(),
-          contact: lead,
-          type: type || "WhatsApp",
-          assigned: assigned.trim() || "------",
-          status: "Pending",
-          due: date ? fmt(date) : "------",
-          completed: "------",
-        });
+        if (saving) return;
+        const local: Record<string, string> = {};
+        if (!lead) local.leadId = "Select a lead";
+        if (!date) local.followUpDate = "Pick a follow-up date";
+        if (next && date && next < date) local.nextFollowUpDate = "Must be on or after the follow-up date";
+        if (!note.trim()) local.note = "Enter a subject or note";
+        setErrors(local);
+        if (Object.keys(local).length) return;
+        setSaving(true);
+        const values = { followUpDate: date, nextFollowUpDate: next, note, type: TYPES.find(([, l]) => l === type)?.[0] ?? "whatsapp" };
+        const assignee = assigned && assigned !== followUp?.assignee?.name ? { assignedUserId: users.find((u) => u.name === assigned)?.id } : {}; // default: me / unchanged
+        try {
+          if (followUp) {
+            await api(`/follow-ups/${followUp.id}`, { method: "PATCH", body: { ...values, ...assignee } });
+            toast.success("Follow-up updated", `“${note.trim()}” for ${lead}.`);
+          } else {
+            await api("/follow-ups", { method: "POST", body: { leadId: leads.find((l) => l.label === lead)?.leadId ?? "", ...values, ...assignee } });
+            toast.success("Follow-up added", `“${note.trim()}” for ${lead}.`);
+          }
+          onSaved();
+        } catch (err) {
+          const fields = fieldErrors(err);
+          const inline = Object.fromEntries(Object.entries(fields).filter(([k]) => FIELDS.includes(k)));
+          setErrors(inline);
+          if (Object.keys(inline).length < Object.keys(fields).length || !Object.keys(fields).length)
+            toast.apiError(err, followUp ? "Couldn't update the follow-up" : "Couldn't add the follow-up");
+        } finally {
+          setSaving(false);
+        }
       }}
       className="-mt-2 flex flex-col gap-6"
     >
       <div className="flex flex-col gap-4">
         {/* Figma selects: pl-24 pr-12 (inside stroke) */}
-        <Field label="Lead / Contact">
-          <SelectField value={lead} options={LEAD_CONTACT_OPTIONS} onChange={setLead} placeholder="awesrdtfg" className="pr-[11px]" />
+        <Field label="Lead / Contact" error={errors.leadId} required>
+          <SelectField value={lead} options={leads.map((l) => l.label)} onChange={change("leadId", setLead)} placeholder="Select a lead" invalid={!!errors.leadId} className="pr-[11px]" />
         </Field>
         <div className="flex flex-col gap-4 sm:flex-row sm:gap-2">
-          <Field label="Follow Up Date">
-            <DateField value={date} onChange={setDate} />
+          <Field label="Follow Up Date" error={errors.followUpDate} required>
+            <DateField value={date} onChange={change("followUpDate", setDate)} invalid={!!errors.followUpDate} />
           </Field>
-          <Field label="Next Follow Up Date">
-            <DateField value={next} onChange={setNext} />
+          <Field label="Next Follow Up Date" error={errors.nextFollowUpDate}>
+            <DateField value={next} onChange={change("nextFollowUpDate", setNext)} invalid={!!errors.nextFollowUpDate} />
           </Field>
         </div>
-        <Field label="Subject/ Note">
-          <TextArea required placeholder="Follow Up On Proposal" value={note} onChange={(e) => setNote(e.target.value)} />
+        <Field label="Subject/ Note" error={errors.note} required>
+          <TextArea placeholder="Follow Up On Proposal" value={note} onChange={(e) => change("note", setNote)(e.target.value)} aria-invalid={!!errors.note} aria-required />
         </Field>
         <div className="flex flex-col gap-4 sm:flex-row sm:gap-2">
-          <Field label="Follow Up Type">
-            <SelectField value={type} options={FOLLOW_UP_TYPE_OPTIONS} onChange={setType} placeholder="WhatsApp" className="pr-[11px]" />
+          <Field label="Follow Up Type" error={errors.type}>
+            <SelectField value={type} options={TYPES.map(([, l]) => l)} onChange={change("type", setType)} placeholder="WhatsApp" invalid={!!errors.type} className="pr-[11px]" />
           </Field>
-          <Field label="Assigned To">
-            <TextInput placeholder="eg, Karthik" value={assigned} onChange={(e) => setAssigned(e.target.value)} />
+          <Field label="Assigned To" error={errors.assignedUserId}>
+            <SelectField value={assigned} options={users.map((u) => u.name)} onChange={change("assignedUserId", setAssigned)} placeholder="Me" invalid={!!errors.assignedUserId} className="pr-[11px]" />
           </Field>
         </div>
       </div>
-      <ModalActions onCancel={onCancel} onDone={() => form.current?.requestSubmit()} doneLabel="Save Follow Up" />
+      <ModalActions onCancel={onCancel} onDone={() => form.current?.requestSubmit()} doneLabel="Save Follow Up" pending={saving} />
     </form>
   );
 }

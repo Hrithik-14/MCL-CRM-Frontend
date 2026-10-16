@@ -2,24 +2,31 @@
 
 import { useState } from "react";
 import { Icon } from "@/components/Icon";
-import { Modal, ModalActions, PrimaryButton, TextInput } from "@/components/ui";
-import { ROLES, UNLISTED_USERS, USERS, type Role } from "@/lib/mock/users";
+import { useConfirm, useToast } from "@/components/feedback";
+import { Skeleton, SkeletonCards, SubtitleSkeleton } from "@/components/skeletons";
+import { LoadFailed, Modal, ModalActions, PrimaryButton, Spinner, TextInput } from "@/components/ui";
+import { api, fieldErrors, useApi, type List } from "@/lib/api";
 import { CaretInput, Chip, FieldLabel, PermissionPills, UField, USER_MODAL, WIDE_ACTIONS, toggle } from "./form";
 import { inter, SectionHeader, UnderlineTabs } from "./SectionHeader";
-import { USER_TABS } from "./UsersPage";
+import { USER_TABS, type RoleSummary as Role } from "./UsersPage";
+
+type Permission = { code: string; label: string };
+// Member avatar colours from the design, picked from the initials so a person keeps one colour.
+const AVATAR = ["#676ff6", "#99a4b0", "#30a74e", "#e90000", "#00bdd7"];
+const avatar = (initials: string) => AVATAR[[...initials].reduce((n, c) => n + c.charCodeAt(0), 0) % AVATAR.length];
 
 const noScrollbar = "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
 
-function RoleCard({ role, onEdit, onDelete }: { role: Role; onEdit: () => void; onDelete: () => void }) {
+function RoleCard({ role, label, onEdit, onDelete, deleting }: { role: Role; label: (code: string) => string; onEdit: () => void; onDelete: () => void; deleting: boolean }) {
   return (
     <article className="flex min-w-0 flex-col gap-3 rounded-[16px] border border-stroke2 bg-primary px-[30px] py-8">
       <h2 className="border-b border-stroke2 pb-4 text-[25px] font-medium text-black">{role.name}</h2>
       <div className="flex flex-col gap-[18px]">
         <div className="flex items-center justify-between">
-          {[["Permissions", role.permissions.length], ["Users", role.users]].map(([label, n]) => (
-            <div key={label} className="flex w-[105px] flex-col gap-[6px]">
-              <p className="text-[18px] font-medium whitespace-nowrap text-nav">{label}</p>
-              <p className={`${inter.className} text-[40px] leading-[round(1.21em,1px)] font-semibold text-secondary opacity-80`}>{n}</p>
+          {[["Permissions", role.permissions.length], ["Users", role.userCount]].map(([title, n]) => (
+            <div key={title} className="flex w-[105px] flex-col gap-[6px]">
+              <p className="text-[18px] font-medium whitespace-nowrap text-nav">{title}</p>
+              <p className={`${inter.className} text-[40px] leading-[round(1.21em,1px)] font-semibold text-selected opacity-80`}>{n}</p>
             </div>
           ))}
         </div>
@@ -28,7 +35,7 @@ function RoleCard({ role, onEdit, onDelete }: { role: Role; onEdit: () => void; 
           {/* Figma: fixed-width row with overflow scroll, so the chips are clipped at the card edge */}
           <div className={`flex gap-2 overflow-x-auto ${noScrollbar}`}>
             {role.permissions.map((p) => (
-              <Chip key={p} label={p} />
+              <Chip key={p} label={label(p)} />
             ))}
           </div>
         </div>
@@ -36,28 +43,31 @@ function RoleCard({ role, onEdit, onDelete }: { role: Role; onEdit: () => void; 
           <p className="text-[18px] font-medium text-[#99a4b0]">Assigned Users</p>
           <div className="flex min-h-[30px] items-center gap-[10px]">
             <div className="flex items-center gap-2">
-              {role.members.map((m) => (
-                <span key={m.initials} className="flex size-[30px] items-center justify-center rounded-full" style={{ background: m.color }}>
+              {role.members.map((m, i) => (
+                <span key={i} className="flex size-[30px] items-center justify-center rounded-full" style={{ background: avatar(m.initials) }}>
                   <span className="text-[14px] font-medium text-white opacity-60">{m.initials}</span>
                 </span>
               ))}
             </div>
-            {role.extra > 0 && (
+            {role.extraMembers > 0 && (
               <span className="flex size-5 items-center justify-center rounded-full bg-[#787878]">
-                <span className="text-[8px] font-semibold text-white opacity-80">+{role.extra}</span>
+                <span className="text-[8px] font-semibold text-white opacity-80">+{role.extraMembers}</span>
               </span>
             )}
           </div>
         </div>
         <div className="flex items-center gap-[14px]">
-          {/* Edit / Delete: no prototype action. Edit → Edit Role overlay (1:7806); Delete removes the card locally */}
-          <button type="button" onClick={onEdit} className="flex min-w-0 flex-1 cursor-pointer items-center justify-center gap-2 rounded-[12px] border border-button bg-primary px-4 py-[10px] text-[16px] font-medium text-button">
+          {/* Edit → Edit Role overlay (1:7806); Delete → API (refused while users still hold the role) */}
+          <button suppressHydrationWarning type="button" onClick={onEdit} className="flex min-w-0 flex-1 cursor-pointer items-center justify-center gap-2 rounded-[12px] border border-button bg-primary px-4 py-[10px] text-[16px] font-medium text-link">
             <Icon name="edit" size={18} />
             Edit
           </button>
-          <button type="button" onClick={onDelete} className="flex min-w-0 flex-1 cursor-pointer items-center justify-center gap-2 rounded-[12px] bg-button px-4 py-[10px] text-[16px] font-medium text-primary">
-            <Icon name="delete" size={18} />
-            Delete
+          <button suppressHydrationWarning type="button" onClick={onDelete}
+            disabled={deleting}
+            aria-busy={deleting || undefined}
+            className="flex min-w-0 flex-1 cursor-pointer items-center justify-center gap-2 rounded-[12px] bg-button px-4 py-[10px] text-[16px] font-medium text-white">
+            {deleting ? <Spinner /> : <Icon name="delete" size={18} />}
+            {deleting ? "Deleting…" : "Delete"}
           </button>
         </div>
       </div>
@@ -68,32 +78,97 @@ function RoleCard({ role, onEdit, onDelete }: { role: Role; onEdit: () => void; 
 type Draft = { name: string; permissions: string[] };
 
 export function RolesPage() {
-  const [roles, setRoles] = useState(ROLES);
+  const roles = useApi<Role[]>("/roles");
+  const permissions = useApi<Permission[]>("/permissions").data ?? [];
+  const users = useApi<List<unknown>>("/users", { pageSize: 1 });
+  const userTotal = users.data?.total;
+  const label = (code: string) => permissions.find((p) => p.code === code)?.label ?? code;
+  // Chips follow the catalogue (sidebar) order, whatever order they were ticked in.
+  const inOrder = (codes: string[]) => [...codes].sort((a, b) => permissions.findIndex((p) => p.code === a) - permissions.findIndex((p) => p.code === b));
   // Create New Role (1:7850)
   const [creating, setCreating] = useState(false);
   // Edit Role (1:7806) ⇄ Permissions (1:7891)
-  const [editing, setEditing] = useState<number | null>(null);
+  const [editing, setEditing] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
   const [draft, setDraft] = useState<Draft>({ name: "", permissions: [] });
   const [beforePick, setBeforePick] = useState<string[]>([]);
+  const [nameError, setNameError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const toast = useToast();
+  const confirm = useConfirm();
 
+  const setName = (name: string) => {
+    setDraft((d) => ({ ...d, name }));
+    setNameError("");
+  };
+  const noPermissionsWarning = () =>
+    toast.warning("This role has no permissions", "People with it can sign in but won't see any CRM pages until you add some.");
+
+  /** Shared by create and edit: one request at a time, inline name errors, toast for everything else. */
+  const submit = async (call: () => Promise<Role>, onSaved: (r: Role) => void, failTitle: string) => {
+    if (saving) return;
+    if (!draft.name.trim()) return setNameError("Enter a role name");
+    setSaving(true);
+    try {
+      const r = await call();
+      onSaved(r);
+      if (r.permissions.length === 0) noPermissionsWarning();
+    } catch (err) {
+      const fields = fieldErrors(err);
+      if (fields.name) setNameError(fields.name === "Already in use" ? "A role with this name already exists" : fields.name);
+      else toast.apiError(err, failTitle);
+    } finally {
+      setSaving(false);
+    }
+  };
   const startCreate = () => {
     setDraft({ name: "", permissions: [] });
+    setNameError("");
     setCreating(true);
   };
-  const create = () => {
-    if (draft.name.trim())
-      setRoles((rs) => [...rs, { id: Math.max(0, ...rs.map((r) => r.id)) + 1, name: draft.name.trim(), users: 0, permissions: draft.permissions, members: [], extra: 0 }]);
-    setCreating(false);
-  };
+  const create = () =>
+    submit(
+      () => api<Role>("/roles", { method: "POST", body: { name: draft.name, permissions: draft.permissions } }),
+      (r) => {
+        roles.mutate((rs) => [...rs, r]); // shown instantly from the server's reply, no list refetch
+        setCreating(false);
+        toast.success("Role created", `“${r.name}” is ready to assign to users.`);
+      },
+      "Couldn't create the role",
+    );
   const startEdit = (r: Role) => {
     setDraft({ name: r.name, permissions: r.permissions });
     setPicking(false);
+    setNameError("");
     setEditing(r.id);
   };
-  const saveEdit = () => {
-    setRoles((rs) => rs.map((r) => (r.id === editing ? { ...r, name: draft.name.trim() || r.name, permissions: draft.permissions } : r)));
-    setEditing(null);
+  const saveEdit = () =>
+    submit(
+      () => api<Role>(`/roles/${editing}`, { method: "PATCH", body: { name: draft.name, permissions: draft.permissions } }),
+      (r) => {
+        roles.mutate((rs) => rs.map((x) => (x.id === r.id ? r : x)));
+        setEditing(null);
+        toast.success("Role updated", `Changes to “${r.name}” apply from each user's next action.`);
+      },
+      "Couldn't update the role",
+    );
+  const remove = async (r: Role) => {
+    if (r.userCount > 0)
+      // Blocked up front with the reason (the server refuses it too).
+      return toast.warning("This role can't be deleted yet", `${r.userCount} user${r.userCount === 1 ? " still has" : "s still have"} “${r.name}”. Move them to another role first.`);
+    const ok = await confirm({ title: "Delete role?", message: <>The role <b className="text-black">{r.name}</b> will be permanently deleted.</>, confirmLabel: "Delete role", danger: true });
+    if (!ok) return;
+    setDeleting(r.id);
+    try {
+      await api(`/roles/${r.id}`, { method: "DELETE" });
+      roles.mutate((rs) => rs.filter((x) => x.id !== r.id));
+      toast.success("Role deleted", `“${r.name}” was removed.`);
+    } catch (err) {
+      toast.apiError(err, "Couldn't delete the role");
+    } finally {
+      setDeleting(null);
+    }
   };
   const openPicker = () => {
     setBeforePick(draft.permissions);
@@ -104,28 +179,48 @@ export function RolesPage() {
   return (
     <div className="flex flex-col gap-[18px] p-4 sm:p-6">
       {/* Add Role (1:6729): prototype points at Create New User (1:7919), a wiring slip — the dedicated Create New Role overlay 1:7850 is used */}
-      <SectionHeader title="User Management" subtitle={`${USERS.length + UNLISTED_USERS} Users`} action={<PrimaryButton onClick={startCreate}>Add Role</PrimaryButton>} />
+      <SectionHeader title="User Management" subtitle={userTotal === undefined ? !users.error && <SubtitleSkeleton /> : `${userTotal} Users`} action={<PrimaryButton onClick={startCreate}>Add Role</PrimaryButton>} />
       {/* Figma 1:6730 sets these tabs in Inter Medium (1:6510 on the User tab uses Montserrat) */}
       <UnderlineTabs tabs={USER_TABS} active={1} className={inter.className} />
 
+      {!roles.data && roles.error && <LoadFailed what="roles" onRetry={roles.reload} />}
+      {!roles.data && !roles.error && (
+        <div className="grid gap-4 lg:grid-cols-2 [&>div]:contents">
+          <SkeletonCards rows={4} className="flex flex-col gap-[18px] rounded-[16px] border border-stroke2 bg-primary px-[30px] py-8">
+            <Skeleton className="h-8 w-40" />
+            <div className="flex justify-between">
+              <Skeleton className="h-[72px] w-[105px]" />
+              <Skeleton className="h-[72px] w-[105px]" />
+            </div>
+            <div className="flex gap-2">
+              {[90, 70, 110].map((w) => <Skeleton key={w} className="h-8 rounded-[16px]" style={{ width: w }} />)}
+            </div>
+            <Skeleton className="h-[30px] w-32" />
+            <div className="flex gap-[14px]">
+              <Skeleton className="h-11 flex-1 rounded-[12px]" />
+              <Skeleton className="h-11 flex-1 rounded-[12px]" />
+            </div>
+          </SkeletonCards>
+        </div>
+      )}
       <div className="grid gap-4 lg:grid-cols-2">
-        {roles.map((r) => (
-          <RoleCard key={r.id} role={r} onEdit={() => startEdit(r)} onDelete={() => setRoles((rs) => rs.filter((x) => x.id !== r.id))} />
+        {roles.data?.map((r) => (
+          <RoleCard key={r.id} role={r} label={label} onEdit={() => startEdit(r)} onDelete={() => remove(r)} deleting={deleting === r.id} />
         ))}
       </div>
 
       <Modal open={creating} onClose={() => setCreating(false)} title="Create New Role" className={`w-[762px] gap-7! ${USER_MODAL}`}>
-        <UField label="Role Name">
+        <UField label="Role Name" error={nameError} required>
           <CaretInput caret="right-[25px] text-white">
-            <TextInput value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} placeholder="eg., Admin" className="h-[50px] pr-[58px]! pl-6!" />
+            <TextInput value={draft.name} onChange={(e) => setName(e.target.value)} placeholder="eg., Admin" aria-invalid={!!nameError} aria-required className="h-[50px] pr-[58px]! pl-6!" />
           </CaretInput>
         </UField>
         <div className="flex flex-col gap-4">
           <FieldLabel>Permissions</FieldLabel>
-          <PermissionPills value={draft.permissions} onToggle={togglePerm} />
+          <PermissionPills options={permissions} value={draft.permissions} onToggle={togglePerm} />
         </div>
         <div className={`-mt-1 ${WIDE_ACTIONS}`}>
-          <ModalActions onCancel={() => setCreating(false)} onDone={create} />
+          <ModalActions onCancel={() => setCreating(false)} onDone={create} pending={saving} pendingLabel="Creating…" />
         </div>
       </Modal>
 
@@ -139,7 +234,7 @@ export function RolesPage() {
         {picking ? (
           <>
             <FieldLabel>Permissions</FieldLabel>
-            <PermissionPills value={draft.permissions} onToggle={togglePerm} />
+            <PermissionPills options={permissions} value={draft.permissions} onToggle={togglePerm} />
             <div className={WIDE_ACTIONS}>
               <ModalActions
                 onCancel={() => {
@@ -152,30 +247,30 @@ export function RolesPage() {
           </>
         ) : (
           <>
-            <UField label="Role Name" gap="gap-[6px]">
+            <UField label="Role Name" gap="gap-[6px]" error={nameError} required>
               <CaretInput caret="right-[13px] text-nav">
-                <TextInput value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} className="h-[50px] pr-[46px]! pl-6! text-nav!" />
+                <TextInput value={draft.name} onChange={(e) => setName(e.target.value)} aria-invalid={!!nameError} aria-required className="h-[50px] pr-[46px]! pl-6! text-nav!" />
               </CaretInput>
             </UField>
             <div className="flex flex-col gap-[6px]">
               <FieldLabel>Proof of Delivery</FieldLabel>
               <div className="flex items-center">
                 <div className={`flex w-[450px] min-w-0 gap-2 overflow-x-auto py-[10px] ${noScrollbar}`}>
-                  {draft.permissions.map((p) => (
-                    <Chip key={p} label={p}>
-                      <button type="button" aria-label={`Remove ${p}`} onClick={() => togglePerm(p)} className="absolute -top-[10px] -right-[2px] cursor-pointer rounded-full bg-[#104b58] p-[2px] text-white">
+                  {inOrder(draft.permissions).map((p) => (
+                    <Chip key={p} label={label(p)}>
+                      <button suppressHydrationWarning type="button" aria-label={`Remove ${p}`} onClick={() => togglePerm(p)} className="absolute -top-[10px] -right-[2px] cursor-pointer rounded-full bg-[#104b58] p-[2px] text-white">
                         <Icon name="close" size={16} />
                       </button>
                     </Chip>
                   ))}
                 </div>
-                <button type="button" aria-label="Add permissions" onClick={openPicker} className="ml-[63px] flex size-[33px] shrink-0 cursor-pointer items-center justify-center rounded-full border border-[#104b58] bg-[#142e38] text-white">
+                <button suppressHydrationWarning type="button" aria-label="Add permissions" onClick={openPicker} className="ml-[63px] flex size-[33px] shrink-0 cursor-pointer items-center justify-center rounded-full border border-[#104b58] bg-[#142e38] text-white">
                   <Icon name="close" size={16} className="rotate-45" />
                 </button>
               </div>
             </div>
             <div className={WIDE_ACTIONS}>
-              <ModalActions onCancel={() => setEditing(null)} onDone={saveEdit} />
+              <ModalActions onCancel={() => setEditing(null)} onDone={saveEdit} pending={saving} />
             </div>
           </>
         )}
